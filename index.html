@@ -13806,6 +13806,59 @@ function getShipmentDraft() {
   return _shipmentDraft;
 }
 
+/* ── Historia cen sprzedaży Resale ──
+   resaleSales jest ładowane z Firebase do pamięci aplikacji. Szukamy tylko
+   zakończonych sprzedaży (status = done) i korzystamy z faktycznej ceny
+   soldPrice, a jeśli jej nie ma — z ceny wystawienia price. Najpierw
+   dopasowujemy po productId, a następnie po znormalizowanej nazwie produktu.
+   Dzięki temu zadziała również po usunięciu/odtworzeniu produktu z innym ID. ── */
+function _normalizeResaleProductName(value) {
+  return String(value || '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function getHistoricalSellPriceStats(productName, productId = null, category = null) {
+  const targetName = _normalizeResaleProductName(productName);
+  const targetCategory = _normalizeResaleProductName(category);
+
+  const matches = resaleSales.filter(rs => {
+    if (rs.status !== 'done') return false;
+
+    const soldPrice = Number(rs.soldPrice ?? rs.price);
+    if (!Number.isFinite(soldPrice) || soldPrice <= 0) return false;
+
+    if (productId && rs.productId === productId) return true;
+
+    const historicalProduct = resaleProducts.find(p => p.id === rs.productId);
+    if (!historicalProduct) return false;
+
+    if (targetName && _normalizeResaleProductName(historicalProduct.name) === targetName) {
+      return true;
+    }
+
+    if (targetCategory) {
+      const historicalCategory = historicalProduct.category ?? historicalProduct.kategoria ?? historicalProduct.type ?? '';
+      return _normalizeResaleProductName(historicalCategory) === targetCategory;
+    }
+
+    return false;
+  });
+
+  if (!matches.length) return { average: null, count: 0 };
+
+  const total = matches.reduce((sum, rs) => sum + Number(rs.soldPrice ?? rs.price), 0);
+  return { average: total / matches.length, count: matches.length };
+}
+
+function calculateAverageSellPrice(productName, productId = null, category = null) {
+  return getHistoricalSellPriceStats(productName, productId, category).average;
+}
+
 function updateShipmentSellPrice(productId, value) {
   const draft = getShipmentDraft();
   const item = draft.items.find(i => i.productId === productId);
@@ -13817,7 +13870,44 @@ function updateShipmentSellPrice(productId, value) {
 }
 
 /* ── Pomocnicza funkcja obliczeniowa (shared) ── */
-function _calcShipmentDraft(items) {
+function _getShipmentActualCosts(sh) {
+  const hasActual = !!(sh && sh.ordered && (
+    Number.isFinite(Number(sh.finalPurchasePrice)) ||
+    Number.isFinite(Number(sh.finalShippingCost))
+  ));
+  const estimated = _calcShipmentDraftEstimate(sh?.items || []);
+  if (!hasActual) return {
+    hasActual: false,
+    totalBuy: estimated.totalBuy,
+    totalShip: estimated.totalShip,
+    totalCost: estimated.totalCost,
+    purchaseBreakdown: null
+  };
+
+  const breakdown = sh.finalPurchaseBreakdown && typeof sh.finalPurchaseBreakdown === 'object'
+    ? sh.finalPurchaseBreakdown : null;
+  let totalBuy = Number.isFinite(Number(sh.finalPurchasePrice)) ? Number(sh.finalPurchasePrice) : estimated.totalBuy;
+
+  // If a per-product breakdown exists, it is the source of truth for the purchase total.
+  if (breakdown) {
+    const sum = Object.values(breakdown).reduce((acc, v) => acc + (Number(v) || 0), 0);
+    if (sum >= 0) totalBuy = sum;
+  }
+
+  const totalShip = Number.isFinite(Number(sh.finalShippingCost))
+    ? Number(sh.finalShippingCost)
+    : estimated.totalShip;
+
+  return {
+    hasActual: true,
+    totalBuy,
+    totalShip,
+    totalCost: totalBuy + totalShip,
+    purchaseBreakdown: breakdown
+  };
+}
+
+function _calcShipmentDraftEstimate(items) {
   let totalBuy = 0, totalWeight = 0, totalShip = 0, totalUnits = 0, totalSell = 0;
   const rows = items.map(item => {
     const p = resaleProducts.find(x => x.id === item.productId);
@@ -13830,19 +13920,58 @@ function _calcShipmentDraft(items) {
     const shipAll = shipOne * item.qty;
     const sellOne = item.sellPrice || 0;
     const sellAll = sellOne * item.qty;
-    const profitOne = sellOne > 0 ? sellOne - buyOne - shipOne : null;
-    const profitAll = profitOne !== null ? profitOne * item.qty : null;
-    totalBuy    += buyAll;
+    totalBuy += buyAll;
     totalWeight += wAll;
-    totalShip   += shipAll;
-    totalUnits  += item.qty;
-    totalSell   += sellAll;
-    return { p, qty: item.qty, buyOne, wOne, shipOne, buyAll, wAll, shipAll, sellOne, sellAll, profitOne, profitAll };
+    totalShip += shipAll;
+    totalUnits += item.qty;
+    totalSell += sellAll;
+    return { p, qty:item.qty, buyOne, wOne, shipOne, buyAll, wAll, shipAll, sellOne, sellAll };
   }).filter(Boolean);
-  const totalCost = totalBuy + totalShip;
-  const hasSell = rows.some(r => r.sellOne > 0);
-  const totalProfit = hasSell ? totalSell - totalCost : null;
-  return { rows, totalBuy, totalWeight, totalShip, totalCost, totalUnits, totalSell, totalProfit, hasSell };
+  return { rows, totalBuy, totalWeight, totalShip, totalCost: totalBuy + totalShip, totalUnits, totalSell };
+}
+
+function _calcShipmentDraft(items, shipment=null) {
+  const est = _calcShipmentDraftEstimate(items);
+  const actual = shipment ? _getShipmentActualCosts(shipment) : {
+    hasActual:false, totalBuy:est.totalBuy, totalShip:est.totalShip, totalCost:est.totalCost, purchaseBreakdown:null
+  };
+  const rows = est.rows.map(r => {
+    let buyOne = r.buyOne;
+    let buyAll = r.buyAll;
+    let shipAll = r.shipAll;
+    if (actual.purchaseBreakdown && actual.purchaseBreakdown[r.p.id] !== undefined) {
+      buyAll = Number(actual.purchaseBreakdown[r.p.id]) || 0;
+      buyOne = r.qty > 0 ? buyAll / r.qty : 0;
+    } else if (actual.hasActual && est.totalBuy > 0 && Number.isFinite(Number(shipment?.finalPurchasePrice))) {
+      const ratio = r.buyAll / est.totalBuy;
+      buyAll = actual.totalBuy * ratio;
+      buyOne = r.qty > 0 ? buyAll / r.qty : 0;
+    }
+    if (actual.hasActual) {
+      const weightDen = est.totalWeight > 0 ? est.totalWeight : est.totalUnits;
+      const weightShare = weightDen > 0
+        ? ((r.wAll > 0 ? r.wAll : r.qty) / weightDen)
+        : 0;
+      shipAll = actual.totalShip * weightShare;
+    }
+    const shipOne = r.qty > 0 ? shipAll / r.qty : 0;
+    const profitOne = r.sellOne > 0 ? r.sellOne - buyOne - shipOne : null;
+    const profitAll = profitOne !== null ? profitOne * r.qty : null;
+    return {...r, buyOne, buyAll, shipOne, shipAll, profitOne, profitAll};
+  });
+  const totalProfit = rows.some(r=>r.sellOne>0) ? est.totalSell - actual.totalCost : null;
+  return {
+    rows,
+    totalBuy:actual.totalBuy,
+    totalWeight:est.totalWeight,
+    totalShip:actual.totalShip,
+    totalCost:actual.totalCost,
+    totalUnits:est.totalUnits,
+    totalSell:est.totalSell,
+    totalProfit,
+    hasSell:rows.some(r=>r.sellOne>0),
+    hasActual:actual.hasActual
+  };
 }
 
 /* ── Odśwież tylko podsumowanie i badge'y zysku — BEZ dotykania inputów ── */
@@ -14001,8 +14130,11 @@ function _renderShipmentSummaryHTML(calc) {
 
 /* ── Renderuje tabelę kosztów (reużywalne) ── */
 function _renderShipmentCostHTML(calc) {
+  const actualLabel = calc.hasActual
+    ? `<span class="inline-flex items-center gap-1 ml-1 text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-emerald-100 dark:bg-emerald-500/20 text-emerald-700 dark:text-emerald-400"><i data-lucide="check-circle" class="w-2.5 h-2.5"></i>RZECZYWISTE</span>`
+    : '';
   return `<div class="bg-gradient-to-r from-indigo-500 to-violet-500 p-4 text-white">
-      <p class="text-indigo-100 text-[10px] font-bold uppercase tracking-widest mb-1">Szacowany koszt całkowity</p>
+      <p class="text-indigo-100 text-[10px] font-bold uppercase tracking-widest mb-1">${calc.hasActual ? 'Rzeczywisty koszt całkowity' : 'Szacowany koszt całkowity'} ${actualLabel}</p>
       <p class="text-3xl font-black tracking-tight">${fmt(calc.totalCost)}</p>
       <p class="text-indigo-200 text-xs mt-1">${calc.totalUnits} sztuk · ${calc.totalWeight.toFixed(2)} kg łącznie</p>
     </div>
@@ -14010,14 +14142,14 @@ function _renderShipmentCostHTML(calc) {
       <div class="flex items-center justify-between px-4 py-2.5">
         <div class="flex items-center gap-2 text-sm text-slate-500">
           <div class="w-6 h-6 rounded-lg bg-amber-50 dark:bg-amber-500/10 flex items-center justify-center"><i data-lucide="shopping-bag" class="w-3.5 h-3.5 text-amber-500"></i></div>
-          Koszt zakupu
+          ${calc.hasActual ? 'Rzeczywisty zakup' : 'Koszt zakupu'}
         </div>
         <span class="font-bold text-amber-600 dark:text-amber-400">${fmt(calc.totalBuy)}</span>
       </div>
       <div class="flex items-center justify-between px-4 py-2.5">
         <div class="flex items-center gap-2 text-sm text-slate-500">
           <div class="w-6 h-6 rounded-lg bg-blue-50 dark:bg-blue-500/10 flex items-center justify-center"><i data-lucide="truck" class="w-3.5 h-3.5 text-blue-500"></i></div>
-          Koszt wysyłki (~${RESALE_SHIP_PER_KG} zł/kg)
+          ${calc.hasActual ? 'Rzeczywista wysyłka' : `Koszt wysyłki (~${RESALE_SHIP_PER_KG} zł/kg)`}
         </div>
         <span class="font-bold text-blue-600 dark:text-blue-400">${fmt(calc.totalShip)}</span>
       </div>
@@ -14102,8 +14234,8 @@ function exportShipmentPDF(shipmentId) {
 <h1>${escH(name)} <span class="badge ${isDraft ? 'badge-draft' : 'badge-ordered'}">${isDraft ? '📝 Projekt' : '✓ Zamówiona'}</span></h1>
 <p class="sub">${dateStr} · ${calc.totalUnits} szt. · ${calc.totalWeight.toFixed(2)} kg</p>
 <div class="kpis">
-  <div class="kpi"><div class="label">Koszt zakupu</div><div class="val" style="color:#d97706">${fmt(calc.totalBuy)}</div></div>
-  <div class="kpi"><div class="label">Koszt wysyłki</div><div class="val" style="color:#3b82f6">${fmt(calc.totalShip)}</div></div>
+  <div class="kpi"><div class="label">${calc.hasActual ? "Rzecz. zakup" : "Koszt zakupu"}</div><div class="val" style="color:#d97706">${fmt(calc.totalBuy)}</div></div>
+  <div class="kpi"><div class="label">${calc.hasActual ? "Rzecz. wysyłka" : "Koszt wysyłki"}</div><div class="val" style="color:#3b82f6">${fmt(calc.totalShip)}</div></div>
   <div class="kpi"><div class="label">Łączny koszt</div><div class="val">${fmt(calc.totalCost)}</div></div>
   ${calc.hasSell ? `<div class="kpi"><div class="label">Szac. zarobek</div><div class="val" style="color:${calc.totalProfit >= 0 ? '#059669':'#e11d48'}">${calc.totalProfit >= 0 ? '+' : '−'}${fmt(Math.abs(calc.totalProfit))}</div></div>` : `<div class="kpi"><div class="label">Marża / ROI</div><div class="val" style="color:#94a3b8">—</div></div>`}
 </div>
@@ -14182,6 +14314,14 @@ function renderResaleShipment(s) {
           <span id="profit-badge-${r.p.id}" class="${badgeClass}">${badgeText}</span>
         </div>
       </div>
+      ${(() => {
+        const history = getHistoricalSellPriceStats(r.p.name, r.p.id, r.p.category ?? r.p.kategoria ?? r.p.type);
+        return history.count > 0 ? `
+          <div class="mt-1.5 ml-28 flex items-center gap-1.5 text-[10px] text-slate-400">
+            <i data-lucide="history" class="w-3 h-3 text-indigo-400 shrink-0"></i>
+            <span>Średnia z ${history.count} poprzednich sprzedaży: <strong class="text-indigo-500 dark:text-indigo-400">${fmt(history.average)}</strong></span>
+          </div>` : '';
+      })()}
     </div>`;
   }).join('');
 
@@ -14244,6 +14384,9 @@ function renderResaleShipment(s) {
         const deliveredBadge = isDelivered
           ? `<span class="text-[10px] font-bold px-2 py-0.5 rounded-full bg-teal-100 dark:bg-teal-500/20 text-teal-700 dark:text-teal-400">📦 Dostarczona ${new Date(sh.deliveredAt).toLocaleDateString('pl-PL')}</span>`
           : '';
+        const deliveryDurationHTML = isDelivered && sh.deliveryDurationMs != null
+          ? `<p class="text-[10px] mt-0.5 text-teal-600 dark:text-teal-400 font-semibold flex items-center gap-1"><i data-lucide="timer" class="w-3 h-3"></i>Czas dostawy: ${escH(sh.deliveryDurationText || _formatShipmentDuration(Number(sh.deliveryDurationMs)))}</p>`
+          : '';
         return `
         <div class="px-4 py-3 hover:bg-slate-50 dark:hover:bg-slate-800/40 transition">
           <div class="flex items-start justify-between gap-3">
@@ -14255,7 +14398,9 @@ function renderResaleShipment(s) {
                   : `<span class="text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-100 dark:bg-amber-500/20 text-amber-700 dark:text-amber-400">⏳ Planowana</span>`}
                 ${profitBadge}
               </div>
-              <p class="text-xs text-slate-400 mt-0.5">${shCalc.totalUnits} szt. · ${shCalc.totalWeight.toFixed(2)} kg · koszt: ${fmt(shCalc.totalCost)}</p>
+              <p class="text-xs text-slate-400 mt-0.5">${shCalc.totalUnits} szt. · ${shCalc.totalWeight.toFixed(2)} kg · ${shCalc.hasActual ? 'rzeczywisty koszt' : 'szac. koszt'}: ${fmt(shCalc.totalCost)}</p>
+              ${shCalc.hasActual ? `<p class="text-[10px] mt-0.5 text-emerald-600 dark:text-emerald-400 font-semibold">Zakup ${fmt(shCalc.totalBuy)} · wysyłka ${fmt(shCalc.totalShip)}</p>` : ''}
+              ${deliveryDurationHTML}
               <p class="text-xs text-slate-400">${shCalc.rows.map(r=>`${escH(r.p.name)} ×${r.qty}`).join(', ')}</p>
               ${timerBarHTML}
             </div>
@@ -14357,8 +14502,22 @@ function addShipmentItem() {
   if (!sel || !sel.value) { toast('Wybierz produkt.', 'error'); return; }
   const draft = getShipmentDraft();
   const existing = draft.items.find(i => i.productId === sel.value);
-  if (existing) { existing.qty++; }
-  else { draft.items.push({ productId: sel.value, qty: 1 }); }
+  if (existing) {
+    existing.qty++;
+  } else {
+    const product = resaleProducts.find(p => p.id === sel.value);
+    const history = product
+      ? getHistoricalSellPriceStats(product.name, product.id, product.category ?? product.kategoria ?? product.type)
+      : { average: null, count: 0 };
+
+    // Średnia jest ustawiana tylko przy pierwszym dodaniu produktu.
+    // Późniejsze zmiany ilości nie nadpisują ceny ręcznie ustawionej przez użytkownika.
+    draft.items.push({
+      productId: sel.value,
+      qty: 1,
+      ...(history.average != null ? { sellPrice: Number(history.average.toFixed(2)) } : {})
+    });
+  }
   rerenderShipmentTab();
 }
 
@@ -14421,40 +14580,157 @@ function saveShipmentDraft() {
 }
 
 function markShipmentOrdered(id) {
-  // Show delivery days modal
+  const sh = resaleShipments.find(x => x.id === id);
   const wrap = document.getElementById('shipment-delivery-modal-wrap');
-  if (!wrap) { _doMarkShipmentOrdered(id, 30); return; }
+  if (!sh || !wrap) return;
+
+  const est = _calcShipmentDraftEstimate(sh.items || []);
+  const existingBreakdown = sh.finalPurchaseBreakdown && typeof sh.finalPurchaseBreakdown === 'object'
+    ? sh.finalPurchaseBreakdown : null;
+  const defaultTotal = Number.isFinite(Number(sh.finalPurchasePrice)) ? Number(sh.finalPurchasePrice) : est.totalBuy;
+  const defaultShip = Number.isFinite(Number(sh.finalShippingCost)) ? Number(sh.finalShippingCost) : est.totalShip;
+
+  const breakdownRows = est.rows.map(r => `
+    <div class="grid grid-cols-[1fr_92px] items-center gap-2">
+      <div class="min-w-0">
+        <p class="text-xs font-semibold truncate">${escH(r.p.name)} <span class="text-slate-400 font-normal">×${r.qty}</span></p>
+        <p class="text-[10px] text-slate-400">szacunek: ${fmt(r.buyAll)}</p>
+      </div>
+      <input type="text" inputmode="decimal" id="final-buy-item-${r.p.id}"
+        value="${existingBreakdown && existingBreakdown[r.p.id] != null ? existingBreakdown[r.p.id] : ''}"
+        placeholder="np. ${r.buyAll.toFixed(2)}"
+        class="w-full rounded-xl border border-slate-200 dark:border-slate-700 dark:bg-slate-800 px-2.5 py-2 text-xs text-right focus:outline-none focus:ring-2 focus:ring-amber-300">
+    </div>`).join('');
+
   wrap.innerHTML = `
   <div class="fixed inset-0 z-50 flex items-center justify-center p-4" style="background:rgba(0,0,0,.45)" onclick="if(event.target===this)closeShipmentDeliveryModal()">
-    <div class="bg-white dark:bg-slate-900 rounded-2xl border border-slate-100 dark:border-slate-800 shadow-2xl w-full max-w-sm p-6 space-y-4">
-      <div class="flex items-center gap-3">
-        <div class="w-10 h-10 rounded-xl bg-indigo-50 dark:bg-indigo-500/10 flex items-center justify-center shrink-0">
-          <i data-lucide="truck" class="w-5 h-5 text-indigo-500"></i>
-        </div>
+    <div class="bg-white dark:bg-slate-900 rounded-2xl border border-slate-100 dark:border-slate-800 shadow-2xl w-full max-w-lg max-h-[90vh] overflow-y-auto">
+      <div class="px-5 py-4 border-b border-slate-100 dark:border-slate-800 flex items-start justify-between gap-3">
         <div>
-          <p class="font-bold text-slate-800 dark:text-slate-100">Czas dostawy</p>
-          <p class="text-xs text-slate-400">Ile dni czekasz na przesyłkę?</p>
+          <p class="font-bold text-slate-800 dark:text-slate-100 flex items-center gap-2"><i data-lucide="wallet-cards" class="w-4 h-4 text-amber-500"></i>Rzeczywiste koszty zamówienia</p>
+          <p class="text-xs text-slate-400 mt-1">${escH(sh.name || 'Paczka')} · dane zapiszą się razem ze statusem „Zamówiona”</p>
         </div>
+        <button onclick="closeShipmentDeliveryModal()" class="p-1.5 rounded-lg text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800"><i data-lucide="x" class="w-4 h-4"></i></button>
       </div>
-      <div class="space-y-2">
-        <label class="text-xs font-semibold text-slate-500 uppercase tracking-wide">Szacowany czas dostawy</label>
-        <div class="flex items-center gap-3">
-          <input id="delivery-days-input" type="number" min="1" max="120" value="30"
-            class="flex-1 rounded-xl border border-slate-200 dark:border-slate-700 dark:bg-slate-800 px-4 py-3 text-2xl font-bold text-center focus:outline-none focus:ring-2 focus:ring-indigo-300">
-          <span class="text-sm font-semibold text-slate-400 shrink-0">dni</span>
+
+      <div class="p-5 space-y-4">
+        <div class="rounded-xl bg-indigo-50 dark:bg-indigo-500/10 border border-indigo-100 dark:border-indigo-500/20 px-3 py-2.5 text-xs text-indigo-700 dark:text-indigo-300">
+          <strong>Podaj kwoty końcowe z potwierdzenia zamówienia.</strong> Możesz wpisać jedną łączną cenę zakupu albo rozbić ją na produkty.
         </div>
-        <div class="flex gap-2 flex-wrap">
-          ${[7,14,21,30,45,60].map(d=>`<button onclick="document.getElementById('delivery-days-input').value=${d}" class="px-3 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 text-xs font-semibold text-slate-500 hover:border-indigo-300 hover:text-indigo-600 transition">${d} dni</button>`).join('')}
+
+        <div class="rounded-2xl border border-slate-100 dark:border-slate-800 overflow-hidden">
+          <div class="px-4 py-3 bg-slate-50 dark:bg-slate-800/50 flex items-center justify-between gap-2">
+            <div>
+              <p class="text-sm font-semibold">Zakup produktów — łącznie</p>
+              <p class="text-[10px] text-slate-400">Jeśli użyjesz rozbicia poniżej, ono ma pierwszeństwo.</p>
+            </div>
+            <span class="text-[10px] font-bold text-slate-400">szac. ${fmt(est.totalBuy)}</span>
+          </div>
+          <div class="p-4">
+            <div class="relative">
+              <input id="final-buy-total" type="text" inputmode="decimal" value="${defaultTotal || ''}" placeholder="np. 850,00"
+                class="w-full rounded-xl border-2 border-amber-200 dark:border-amber-500/30 dark:bg-slate-800 px-4 py-3 pr-12 text-lg font-black focus:outline-none focus:ring-2 focus:ring-amber-300">
+              <span class="absolute right-4 top-1/2 -translate-y-1/2 text-xs font-bold text-slate-400">zł</span>
+            </div>
+          </div>
         </div>
-        <p class="text-[11px] text-slate-400">Timer zacznie odliczać od dziś. Gdy przesyłka dotrze, możesz ją oznaczyć jako dostarczoną.</p>
-      </div>
-      <div class="flex gap-2 pt-1">
-        <button onclick="closeShipmentDeliveryModal()" class="flex-1 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 text-sm font-semibold text-slate-500 hover:bg-slate-50 dark:hover:bg-slate-800 transition">Anuluj</button>
-        <button onclick="_doMarkShipmentOrdered('${id}', parseInt(document.getElementById('delivery-days-input').value)||30)" class="flex-1 py-2.5 rounded-xl bg-indigo-500 text-white text-sm font-bold hover:bg-indigo-600 transition flex items-center justify-center gap-2"><i data-lucide="check" class="w-4 h-4"></i>Zamówiona</button>
+
+        <div class="rounded-2xl border border-slate-100 dark:border-slate-800 overflow-hidden">
+          <div class="px-4 py-3 bg-slate-50 dark:bg-slate-800/50 flex items-center justify-between">
+            <p class="text-sm font-semibold">Opcjonalnie: rozbicie zakupu na produkty</p>
+            <button type="button" onclick="toggleShipmentPurchaseBreakdown()" class="text-xs font-bold text-indigo-500 hover:underline">Pokaż / ukryj</button>
+          </div>
+          <div id="shipment-purchase-breakdown" class="hidden p-4 space-y-2.5">
+            ${breakdownRows || '<p class="text-xs text-slate-400">Brak produktów.</p>'}
+            <p id="shipment-breakdown-hint" class="text-[10px] text-slate-400 pt-1">Jeżeli wpiszesz choć jedną kwotę tutaj, suma tych kwot zostanie zapisana jako rzeczywista cena zakupu.</p>
+          </div>
+        </div>
+
+        <div class="rounded-2xl border border-slate-100 dark:border-slate-800 overflow-hidden">
+          <div class="px-4 py-3 bg-slate-50 dark:bg-slate-800/50">
+            <p class="text-sm font-semibold">Końcowy koszt wysyłki</p>
+            <p class="text-[10px] text-slate-400">Faktycznie zapłacona dostawa za całą paczkę.</p>
+          </div>
+          <div class="p-4">
+            <div class="relative">
+              <input id="final-shipping-cost" type="text" inputmode="decimal" value="${defaultShip || ''}" placeholder="np. 72,00"
+                class="w-full rounded-xl border-2 border-blue-200 dark:border-blue-500/30 dark:bg-slate-800 px-4 py-3 pr-12 text-lg font-black focus:outline-none focus:ring-2 focus:ring-blue-300">
+              <span class="absolute right-4 top-1/2 -translate-y-1/2 text-xs font-bold text-slate-400">zł</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="rounded-2xl bg-slate-50 dark:bg-slate-800/50 border border-slate-100 dark:border-slate-800 p-3 flex items-center justify-between">
+          <div>
+            <p class="text-[10px] uppercase tracking-wider font-bold text-slate-400">Szacowany czas dostawy</p>
+            <p class="text-xs text-slate-500 dark:text-slate-300">Timer zacznie odliczać od dziś.</p>
+          </div>
+          <div class="flex items-center gap-2">
+            <input id="delivery-days-input" type="number" min="1" max="120" value="${sh.deliveryDays || 30}"
+              class="w-20 rounded-xl border border-slate-200 dark:border-slate-700 dark:bg-slate-800 px-2 py-2 text-center font-bold focus:outline-none focus:ring-2 focus:ring-indigo-300">
+            <span class="text-xs font-semibold text-slate-400">dni</span>
+          </div>
+        </div>
+
+        <div class="flex gap-2 pt-1">
+          <button onclick="closeShipmentDeliveryModal()" class="flex-1 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 text-sm font-semibold text-slate-500 hover:bg-slate-50 dark:hover:bg-slate-800 transition">Anuluj</button>
+          <button onclick="_submitShipmentOrdered('${id}')" class="flex-1 py-2.5 rounded-xl bg-indigo-500 text-white text-sm font-bold hover:bg-indigo-600 transition flex items-center justify-center gap-2"><i data-lucide="check" class="w-4 h-4"></i>Zapisz i oznacz jako zamówioną</button>
+        </div>
       </div>
     </div>
   </div>`;
   lucide.createIcons();
+}
+
+function toggleShipmentPurchaseBreakdown() {
+  document.getElementById('shipment-purchase-breakdown')?.classList.toggle('hidden');
+}
+
+function _submitShipmentOrdered(id) {
+  const sh = resaleShipments.find(x => x.id === id);
+  if (!sh) return;
+  const parseMoney = id => {
+    const raw = (document.getElementById(id)?.value || '').replace(',', '.').replace(/[^0-9.-]/g,'');
+    const n = parseFloat(raw);
+    return Number.isFinite(n) && n >= 0 ? +n.toFixed(2) : null;
+  };
+  const finalPurchasePrice = parseMoney('final-buy-total');
+  const finalShippingCost = parseMoney('final-shipping-cost');
+  if (finalPurchasePrice === null) { toast('Podaj rzeczywistą cenę zakupu.', 'error'); return; }
+  if (finalShippingCost === null) { toast('Podaj rzeczywisty koszt wysyłki.', 'error'); return; }
+
+  const breakdown = {};
+  (sh.items || []).forEach(item => {
+    const val = parseMoney('final-buy-item-' + item.productId);
+    if (val !== null) breakdown[item.productId] = val;
+  });
+  const hasBreakdown = Object.keys(breakdown).length > 0;
+  if (hasBreakdown) {
+    const sum = Object.values(breakdown).reduce((a,v)=>a+v,0);
+    if (Math.abs(sum - finalPurchasePrice) > 0.01) {
+      toast(`Rozbicie zakupu (${fmt(sum)}) nie zgadza się z ceną łączną (${fmt(finalPurchasePrice)}). Popraw kwoty.`, 'error');
+      return;
+    }
+  }
+
+  sh.ordered = true;
+  sh.orderedAt = Date.now();
+  sh.deliveryDays = Math.max(1, parseInt(document.getElementById('delivery-days-input')?.value) || 30);
+  sh.finalPurchasePrice = finalPurchasePrice;
+  sh.finalShippingCost = finalShippingCost;
+  sh.finalPurchaseBreakdown = hasBreakdown ? breakdown : null;
+  sh.actualCostUpdatedAt = Date.now();
+
+  save(SK.resaleShipments, resaleShipments);
+  closeShipmentDeliveryModal();
+  renderAll();
+  rerenderShipmentTab();
+  toast('Zamówiono paczkę · zapisano rzeczywiste koszty ✓');
+}
+
+function _doMarkShipmentOrdered(id, days) {
+  // Kompatybilność ze starym wywołaniem — otwieramy nowy formularz kosztów.
+  markShipmentOrdered(id);
 }
 
 function closeShipmentDeliveryModal() {
@@ -14468,7 +14744,7 @@ function openShipmentPreviewModal(id) {
   const wrap = document.getElementById('shipment-preview-modal-wrap');
   if (!sh || !wrap) return;
 
-  const calc = _calcShipmentDraft(sh.items);
+  const calc = _calcShipmentDraft(sh.items, sh);
   const date = sh.orderedAt ? new Date(sh.orderedAt).toLocaleDateString('pl-PL') : new Date(sh.createdAt).toLocaleDateString('pl-PL');
 
   const statusBadge = sh.deliveredAt
@@ -14523,6 +14799,11 @@ function openShipmentPreviewModal(id) {
         <div>
           <p class="font-bold text-slate-800 dark:text-slate-100 flex items-center gap-2"><i data-lucide="package-search" class="w-4 h-4 text-indigo-400"></i>${escH(sh.name || 'Paczka')}</p>
           <div class="flex items-center gap-2 mt-1.5 flex-wrap">${statusBadge}</div>
+          ${sh.deliveredAt && sh.deliveryDurationMs != null ? `
+            <div class="mt-2 inline-flex items-center gap-1.5 text-[11px] font-semibold text-teal-600 dark:text-teal-400">
+              <i data-lucide="timer" class="w-3.5 h-3.5"></i>
+              Czas dostawy: ${escH(sh.deliveryDurationText || _formatShipmentDuration(Number(sh.deliveryDurationMs)))}
+            </div>` : ''}
         </div>
         <button onclick="closeShipmentPreviewModal()" class="text-slate-400 hover:text-slate-600 p-1.5 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 transition shrink-0"><i data-lucide="x" class="w-4 h-4"></i></button>
       </div>
@@ -14532,6 +14813,9 @@ function openShipmentPreviewModal(id) {
       </div>
 
       <div class="shrink-0 border-t border-slate-100 dark:border-slate-800">
+        <div class="px-4 py-2.5 bg-slate-50 dark:bg-slate-800/60 border-b border-slate-100 dark:border-slate-800 text-xs">
+          ${calc.hasActual ? `<span class="font-bold text-emerald-600 dark:text-emerald-400">Rzeczywiste koszty:</span> zakup ${fmt(calc.totalBuy)} · wysyłka ${fmt(calc.totalShip)} · razem ${fmt(calc.totalCost)}` : `<span class="text-slate-400">Koszty są na razie szacunkowe.</span>`}
+        </div>
         <div class="grid grid-cols-4 gap-px bg-slate-100 dark:bg-slate-800">
           <div class="bg-white dark:bg-slate-900 p-3 text-center">
             <p class="text-[10px] text-slate-400 mb-0.5">Sztuk</p>
@@ -14574,13 +14858,160 @@ function _doMarkShipmentOrdered(id, days) {
   toast('Oznaczono jako zamówioną ✓ Timer startuje!');
 }
 
+function _formatShipmentDuration(ms) {
+  if (!Number.isFinite(ms) || ms < 0) return '—';
+  const totalMinutes = Math.floor(ms / 60000);
+  const days = Math.floor(totalMinutes / 1440);
+  const hours = Math.floor((totalMinutes % 1440) / 60);
+  const minutes = totalMinutes % 60;
+
+  const parts = [];
+  if (days) parts.push(`${days} ${days === 1 ? 'dzień' : 'dni'}`);
+  if (hours) parts.push(`${hours} godz.`);
+  if (minutes && parts.length < 2) parts.push(`${minutes} min`);
+  return parts.length ? parts.join(' ') : '< 1 min';
+}
+
+function _shipmentDateTimeLocal(ts) {
+  if (!Number.isFinite(Number(ts))) return '';
+  const d = new Date(Number(ts));
+  const pad = n => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+function _shipmentDurationPreview(orderedAt, deliveredAt) {
+  const ms = Number(deliveredAt) - Number(orderedAt);
+  return _formatShipmentDuration(ms);
+}
+
+function _renderShipmentDeliveryCorrectionModal(id, deliveredAtDefault) {
+  const sh = resaleShipments.find(x => x.id === id);
+  const wrap = document.getElementById('shipment-delivery-modal-wrap');
+  if (!sh || !wrap) return;
+
+  const orderedAt = Number(sh.orderedAt);
+  const now = Number(deliveredAtDefault) || Date.now();
+  const initialDuration = orderedAt ? _shipmentDurationPreview(orderedAt, now) : 'brak daty zamówienia';
+
+  wrap.innerHTML = `
+  <div class="fixed inset-0 z-[60] flex items-center justify-center p-4" style="background:rgba(0,0,0,.45)"
+       onclick="if(event.target===this)closeShipmentDeliveryModal()">
+    <div class="bg-white dark:bg-slate-900 rounded-2xl border border-slate-100 dark:border-slate-800 shadow-2xl w-full max-w-md overflow-hidden">
+      <div class="px-5 py-4 border-b border-slate-100 dark:border-slate-800 flex items-start justify-between gap-3">
+        <div>
+          <p class="font-bold text-slate-800 dark:text-slate-100 flex items-center gap-2">
+            <i data-lucide="package-check" class="w-4 h-4 text-teal-500"></i>
+            Oznacz paczkę jako dostarczoną
+          </p>
+          <p class="text-xs text-slate-400 mt-1">${escH(sh.name || 'Paczka')}</p>
+        </div>
+        <button onclick="closeShipmentDeliveryModal()" class="p-1.5 rounded-lg text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800">
+          <i data-lucide="x" class="w-4 h-4"></i>
+        </button>
+      </div>
+
+      <div class="p-5 space-y-4">
+        <div class="rounded-xl bg-teal-50 dark:bg-teal-500/10 border border-teal-100 dark:border-teal-500/20 px-3 py-2.5 text-xs text-teal-700 dark:text-teal-300">
+          <strong>Domyślnie ustawiono dokładny moment kliknięcia „Dostarczona”.</strong>
+          Jeśli oznaczasz paczkę z opóźnieniem, możesz tutaj skorygować datę i godzinę faktycznego doręczenia.
+        </div>
+
+        <div>
+          <label class="block text-xs font-semibold text-slate-500 dark:text-slate-400 mb-1.5">Data i godzina dostarczenia</label>
+          <input id="shipment-delivered-at-input" type="datetime-local"
+                 value="${_shipmentDateTimeLocal(now)}"
+                 max="${_shipmentDateTimeLocal(Date.now())}"
+                 onchange="updateShipmentDeliveryDurationPreview('${id}')"
+                 class="w-full rounded-xl border-2 border-teal-200 dark:border-teal-500/30 dark:bg-slate-800 px-4 py-3 text-sm font-bold focus:outline-none focus:ring-2 focus:ring-teal-300">
+        </div>
+
+        <div class="rounded-2xl bg-slate-50 dark:bg-slate-800/50 border border-slate-100 dark:border-slate-800 p-4">
+          <div class="flex items-center justify-between gap-3">
+            <div>
+              <p class="text-[10px] uppercase tracking-wider font-bold text-slate-400">Czas dostawy</p>
+              <p class="text-xs text-slate-400 mt-0.5">${orderedAt ? `Zamówiona: ${new Date(orderedAt).toLocaleString('pl-PL')}` : 'Brak zapisanej daty zamówienia'}</p>
+            </div>
+            <p id="shipment-delivery-duration-preview" class="text-lg font-black text-teal-600 dark:text-teal-400">${initialDuration}</p>
+          </div>
+        </div>
+
+        <div class="flex gap-2 pt-1">
+          <button onclick="closeShipmentDeliveryModal()"
+                  class="flex-1 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 text-sm font-semibold text-slate-500 hover:bg-slate-50 dark:hover:bg-slate-800 transition">
+            Anuluj
+          </button>
+          <button onclick="confirmShipmentDelivered('${id}')"
+                  class="flex-1 py-2.5 rounded-xl bg-teal-500 text-white text-sm font-bold hover:bg-teal-600 transition flex items-center justify-center gap-2">
+            <i data-lucide="check" class="w-4 h-4"></i>
+            Zapisz dostarczenie
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>`;
+  lucide.createIcons();
+}
+
+function updateShipmentDeliveryDurationPreview(id) {
+  const sh = resaleShipments.find(x => x.id === id);
+  const input = document.getElementById('shipment-delivered-at-input');
+  const preview = document.getElementById('shipment-delivery-duration-preview');
+  if (!sh || !input || !preview) return;
+
+  const deliveredAt = input.value ? new Date(input.value).getTime() : NaN;
+  if (!Number.isFinite(deliveredAt) || !Number.isFinite(Number(sh.orderedAt))) {
+    preview.textContent = '—';
+    return;
+  }
+
+  const duration = deliveredAt - Number(sh.orderedAt);
+  preview.textContent = duration >= 0 ? _formatShipmentDuration(duration) : 'Data wcześniejsza';
+}
+
+function confirmShipmentDelivered(id) {
+  const sh = resaleShipments.find(x => x.id === id);
+  const input = document.getElementById('shipment-delivered-at-input');
+  if (!sh || !input) return;
+
+  const deliveredAt = input.value ? new Date(input.value).getTime() : NaN;
+  if (!Number.isFinite(deliveredAt)) {
+    toast('Podaj prawidłową datę i godzinę dostarczenia.', 'error');
+    return;
+  }
+
+  if (Number(sh.orderedAt) && deliveredAt < Number(sh.orderedAt)) {
+    toast('Data dostarczenia nie może być wcześniejsza niż data zamówienia.', 'error');
+    return;
+  }
+
+  const durationMs = Number(sh.orderedAt) ? deliveredAt - Number(sh.orderedAt) : null;
+  const totalMinutes = durationMs != null ? Math.floor(durationMs / 60000) : null;
+  const durationDays = totalMinutes != null ? Math.floor(totalMinutes / 1440) : null;
+  const durationHours = totalMinutes != null ? Math.floor((totalMinutes % 1440) / 60) : null;
+  const durationMinutes = totalMinutes != null ? totalMinutes % 60 : null;
+
+  sh.deliveredAt = deliveredAt;
+  sh.deliveryDurationMs = durationMs;
+  sh.deliveryDurationMinutes = totalMinutes;
+  sh.deliveryDurationDays = durationDays;
+  sh.deliveryDurationHours = durationHours;
+  sh.deliveryDurationRemainderMinutes = durationMinutes;
+  sh.deliveryDurationText = durationMs != null ? _formatShipmentDuration(durationMs) : null;
+  sh.deliveryDurationUpdatedAt = Date.now();
+
+  save(SK.resaleShipments, resaleShipments);
+  closeShipmentDeliveryModal();
+  rerenderShipmentTab();
+  toast(`Paczka dostarczona! Czas dostawy: ${durationMs != null ? _formatShipmentDuration(durationMs) : '—'} 🎉`);
+}
+
 function markShipmentDelivered(id) {
   const sh = resaleShipments.find(x => x.id === id);
-  if (!sh) return;
-  sh.deliveredAt = Date.now();
-  save(SK.resaleShipments, resaleShipments);
-  rerenderShipmentTab();
-  toast('Paczka dostarczona! 🎉');
+  if (!sh || !sh.ordered) return;
+
+  // Dokładny moment kliknięcia zapisujemy jako domyślną wartość formularza.
+  const clickedAt = Date.now();
+  _renderShipmentDeliveryCorrectionModal(id, clickedAt);
 }
 
 /* Live delivery timers */
@@ -14705,7 +15136,7 @@ function initShipmentMarginChart() {
   const data = [...resaleShipments]
     .sort((a, b) => a.createdAt - b.createdAt)
     .map(sh => {
-      const c = _calcShipmentDraft(sh.items);
+      const c = _calcShipmentDraft(sh.items, sh);
       if (c.totalProfit === null) return null;
       const margin = c.totalSell > 0 ? (c.totalProfit / c.totalSell * 100) : 0;
       const roi    = c.totalCost  > 0 ? (c.totalProfit / c.totalCost  * 100) : 0;
@@ -14958,7 +15389,9 @@ function renderResaleStats(s) {
   const incomeEntries  = getSourceTransactions(s.id);
   const expenseEntries = getSourceExpenses(s.id);
   const totalIncome    = incomeEntries.reduce((a,t)=>a+t.amount, 0);
-  const totalExpense   = expenseEntries.reduce((a,t)=>a+t.amount, 0);
+  const actualShipments = resaleShipments.filter(sh => sh.ordered && (sh.finalPurchasePrice != null || sh.finalShippingCost != null));
+  const actualShipmentCost = actualShipments.reduce((sum, sh) => sum + _getShipmentActualCosts(sh).totalCost, 0);
+  const totalExpense   = expenseEntries.reduce((a,t)=>a+t.amount, 0) + actualShipmentCost;
   const balance        = totalIncome - totalExpense;
 
   // Expense breakdown by type
@@ -14966,6 +15399,11 @@ function renderResaleStats(s) {
   expenseEntries.forEach(t => {
     const k = t._resaleExpType || 'other';
     expByType[k] = (expByType[k]||0) + t.amount;
+  });
+  actualShipments.forEach(sh => {
+    const ac = _getShipmentActualCosts(sh);
+    expByType.purchase += ac.totalBuy;
+    expByType.shipping += ac.totalShip;
   });
 
   // Sales data
@@ -15008,13 +15446,29 @@ function renderResaleStats(s) {
     return { key: `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`, label: d.toLocaleDateString('pl-PL',{month:'short',year:'2-digit'}) };
   });
   const monthlyIncome  = months.map(m => incomeEntries.filter(t=>t.date&&t.date.startsWith(m.key)).reduce((a,t)=>a+t.amount,0));
-  const monthlyExpense = months.map(m => expenseEntries.filter(t=>t.date&&t.date.startsWith(m.key)).reduce((a,t)=>a+t.amount,0));
+  const monthlyExpense = months.map(m => {
+    const tx = expenseEntries.filter(t=>t.date&&t.date.startsWith(m.key)).reduce((a,t)=>a+t.amount,0);
+    const shipments = actualShipments
+      .filter(sh => sh.orderedAt && new Date(sh.orderedAt).toISOString().slice(0,7) === m.key)
+      .reduce((a,sh)=>a+_getShipmentActualCosts(sh).totalCost,0);
+    return tx + shipments;
+  });
   const monthlyProfit  = months.map((_,i) => monthlyIncome[i] - monthlyExpense[i]);
 
   // Total profit from actual sold transactions
   const totalSoldRevenue = shippedSales.reduce((a,rs)=>a+(rs.soldPrice??rs.price),0);
   const totalSoldCost    = shippedSales.reduce((a,rs)=>{
     const p = resaleProducts.find(x=>x.id===rs.productId);
+    const shipment = [...actualShipments].reverse().find(sh => (sh.items||[]).some(i=>i.productId===rs.productId));
+    if (shipment) {
+      const ac = _getShipmentActualCosts(shipment);
+      const item = (shipment.items||[]).find(i=>i.productId===rs.productId);
+      const bd = shipment.finalPurchaseBreakdown && shipment.finalPurchaseBreakdown[rs.productId] != null
+        ? Number(shipment.finalPurchaseBreakdown[rs.productId]) : null;
+      const buy = bd != null ? (item?.qty ? bd / item.qty : bd) : (ac.totalBuy * ((item?.qty||1) * (p?.buyPrice||0)) / Math.max(0.01, _calcShipmentDraftEstimate(shipment.items||[]).totalBuy) / Math.max(1,item?.qty||1));
+      const shipPart = ac.totalShip * ((item?.qty||1) * (p?.weight||0)) / Math.max(0.0001, _calcShipmentDraftEstimate(shipment.items||[]).totalWeight);
+      return a + buy + shipPart;
+    }
     const ship = p?.weight ? p.weight*RESALE_SHIP_PER_KG : 0;
     return a + (p?.buyPrice||0) + ship;
   },0);
