@@ -12827,11 +12827,12 @@ function renderResaleSales(s) {
     const saleRows = sales.map(rs => {
       const prod     = resaleProducts.find(p => p.id === rs.productId);
       const prodName = prod ? escH(prod.name) : '<span class="text-slate-400 italic">Produkt usunięty</span>';
-      const shipCost = prod?.weight ? prod.weight * RESALE_SHIP_PER_KG : 0;
-      const buyCost  = prod?.buyPrice || 0;
-      const totalCost = buyCost + shipCost;
       const soldPrice = rs.soldPrice ?? rs.price;
-      const profit    = st === 'shipped' && totalCost > 0 ? soldPrice - totalCost : null;
+      const saleCost = getResaleSaleStoredCost(rs);
+      const saleProfit = getResaleSaleProfit(rs, soldPrice);
+      // Po przypisaniu paczki używamy zapisanego snapshotu rzeczywistych kosztów,
+      // a nie aktualnej szacowanej ceny produktu.
+      const profit = st === 'shipped' && saleCost.totalCost >= 0 ? saleProfit.profit : null;
 
       // Timer for to_ship
       let timerHTML = '';
@@ -12931,9 +12932,9 @@ function renderResaleSales(s) {
     const prod = resaleProducts.find(p => p.id === rs.productId);
     const prodName = prod ? escH(prod.name) : '<span class="text-slate-400 italic">Produkt usunięty</span>';
     const soldPrice = rs.soldPrice ?? rs.price;
-    const shipCost = prod?.weight ? prod.weight * RESALE_SHIP_PER_KG : 0;
-    const buyCost = prod?.buyPrice || 0;
-    const profit = buyCost > 0 ? soldPrice - buyCost - shipCost : null;
+    const saleCost = getResaleSaleStoredCost(rs);
+    const saleProfit = getResaleSaleProfit(rs, soldPrice);
+    const profit = saleCost.totalCost >= 0 ? saleProfit.profit : null;
     return `<div class="flex items-center gap-3 py-3 px-3 rounded-xl hover:bg-slate-50 dark:hover:bg-slate-800/60 transition">
       <div class="w-9 h-9 rounded-xl flex items-center justify-center shrink-0 bg-purple-50 dark:bg-purple-500/10">
         <i data-lucide="check-circle-2" class="w-4 h-4 text-purple-500"></i>
@@ -13253,6 +13254,8 @@ function confirmMarkSold(saleId) {
   rs.status    = 'to_ship';
   rs.soldAt    = Date.now();
   rs.soldPrice = soldPrice;
+  // Sprzedaż jest potwierdzona — od tej chwili sztuka nie jest już dostępna na stanie.
+  ensureResaleSaleInventoryDeducted(rs);
   save(SK.resaleSales, resaleSales);
 
   // Optionally add to history
@@ -13301,6 +13304,9 @@ function finishResaleSale(saleId) {
   if (!rs) return;
   rs.status  = 'done';
   rs.doneAt  = Date.now();
+  // Zabezpieczenie dla starszych rekordów, które zostały sprzedane przed dodaniem
+  // flagi _inventoryDeducted. Dla nowych rekordów funkcja niczego drugi raz nie odejmie.
+  ensureResaleSaleInventoryDeducted(rs);
   save(SK.resaleSales, resaleSales);
 
   // Add to Saldo Resale
@@ -13317,12 +13323,6 @@ function finishResaleSale(saleId) {
   });
   save(SK.transactions, transactions);
 
-  // Decrease product quantity
-  if (prod) {
-    if ((prod.quantity || 0) > 0) prod.quantity = (prod.quantity || 0) - 1;
-    save(SK.resaleProducts, resaleProducts);
-  }
-
   renderAll();
   const s = incomeSources.find(x => x.id === selectedSourceId);
   if (s) renderResaleDetail(s);
@@ -13330,6 +13330,15 @@ function finishResaleSale(saleId) {
 }
 
 function deleteResaleSale(saleId) {
+  const rs = resaleSales.find(x => x.id === saleId);
+  // Jeśli usuwasz już potwierdzoną sprzedaż, przywróć sztukę na stan.
+  if (rs?._inventoryDeducted) {
+    const prod = resaleProducts.find(p => p.id === rs.productId);
+    if (prod) {
+      prod.quantity = Math.max(0, parseInt(prod.quantity, 10) || 0) + 1;
+      save(SK.resaleProducts, resaleProducts);
+    }
+  }
   resaleSales = resaleSales.filter(x => x.id !== saleId);
   save(SK.resaleSales, resaleSales);
   const s = incomeSources.find(x => x.id === selectedSourceId);
@@ -13791,6 +13800,57 @@ const PLATFORM_FEES = {
   facebook: { type:'pct',            pct:0.00, fixed:0,    label:'0%' },
   inne:     { type:'pct',            pct:0.00, fixed:0,    label:'—' },
 };
+
+
+// Zwraca koszt zapisany razem z konkretnym wystawieniem. Dzięki temu późniejsze
+// zmiany produktu lub paczki nie zmieniają historycznego zysku sprzedaży.
+function getResaleSaleStoredCost(rs) {
+  if (!rs) return { buyCost:0, shipCost:0, totalCost:0, source:'fallback' };
+  const buySnap = Number(rs.actualBuyCost);
+  const shipSnap = Number(rs.actualShippingCost);
+  const totalSnap = Number(rs.actualTotalCost);
+
+  if (Number.isFinite(totalSnap) && totalSnap >= 0) {
+    return {
+      buyCost: Number.isFinite(buySnap) ? buySnap : Math.max(0, totalSnap - (Number.isFinite(shipSnap) ? shipSnap : 0)),
+      shipCost: Number.isFinite(shipSnap) ? shipSnap : Math.max(0, totalSnap - (Number.isFinite(buySnap) ? buySnap : 0)),
+      totalCost: totalSnap,
+      source:'snapshot'
+    };
+  }
+
+  // Dla starszych wystawień bez snapshotu spróbuj policzyć z przypisanej paczki.
+  if (rs.productId) {
+    const live = getResaleSaleCost(rs.productId, rs.shipmentId || null);
+    return { ...live, source: rs.shipmentId ? 'shipment-live' : 'product-live' };
+  }
+  return { buyCost:0, shipCost:0, totalCost:0, source:'fallback' };
+}
+
+function getResaleSaleProfit(rs, salePrice) {
+  const price = Number(salePrice) || 0;
+  const cost = getResaleSaleStoredCost(rs);
+  const fee = PLATFORM_FEES[rs?.platform] || { type:'pct', pct:0, fixed:0 };
+  const feeAmount = fee.type === 'pct_plus_fixed'
+    ? price * (Number(fee.pct)||0) + (Number(fee.fixed)||0)
+    : price * (Number(fee.pct)||0);
+  return { profit: price - feeAmount - cost.totalCost, cost, feeAmount };
+}
+
+// Ilość magazynowa ma zmniejszać się dokładnie raz po potwierdzeniu sprzedaży.
+// Flaga na rekordzie sprzedaży chroni przed podwójnym odjęciem przy późniejszym
+// przejściu przez status „Wysłany” i „Zakończ”.
+function ensureResaleSaleInventoryDeducted(rs) {
+  if (!rs || rs._inventoryDeducted) return false;
+  const prod = resaleProducts.find(p => p.id === rs.productId);
+  if (prod) {
+    const currentQty = Math.max(0, parseInt(prod.quantity, 10) || 0);
+    prod.quantity = Math.max(0, currentQty - 1);
+    save(SK.resaleProducts, resaleProducts);
+  }
+  rs._inventoryDeducted = true;
+  return true;
+}
 
 function getResaleProductShipmentOptions(productId) {
   const shipments = resaleShipments.filter(sh => (sh.items || []).some(i => i.productId === productId));
