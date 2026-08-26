@@ -11935,15 +11935,6 @@ let resaleProductSortDir  = 'asc';    // 'asc'|'desc'
 let resaleProductSeasonFilter = 'all'; // 'all'|'wiosna'|'lato'|'jesien'|'zima'
 let resaleProductStatusFilter = 'all'; // 'all'|'has_stock'|'listed'|'to_ship'|'shipped'|'no_stock'
 
-// Sztuki aktualnie zamówione: paczka ma status Zamówiona, ale nie została jeszcze dostarczona.
-function getResaleProductOrderedQty(productId) {
-  return resaleShipments.reduce((sum, sh) => {
-    if (!sh || !sh.ordered || sh.deliveredAt) return sum;
-    const item = (sh.items || []).find(i => i.productId === productId);
-    return sum + (item ? Math.max(0, parseInt(item.qty, 10) || 0) : 0);
-  }, 0);
-}
-
 function renderResaleProducts(s) {
   const editId  = resaleProductEditId;
   const query   = resaleProductSearch.toLowerCase().trim();
@@ -12022,7 +12013,6 @@ function renderResaleProducts(s) {
     const estSellPrice = p.sellPrice || 0;
     const estProfit    = estSellPrice > 0 ? estSellPrice - totalCost : null;
     const estROI       = estProfit != null && totalCost > 0 ? (estProfit / totalCost) * 100 : null;
-    const orderedQty    = getResaleProductOrderedQty(p.id);
 
     // ── EDIT MODE ──
     if (editId === p.id) {
@@ -12140,7 +12130,6 @@ function renderResaleProducts(s) {
     const statusPills = `
       ${seasonSection}
       ${(p.quantity||0) > 0 ? `<span class="inline-flex items-center gap-1 text-[10px] font-semibold px-1.5 py-0.5 rounded-md bg-blue-50 dark:bg-blue-500/10 text-blue-600 dark:text-blue-400"><i data-lucide="box" class="w-2.5 h-2.5"></i>${p.quantity||0} szt.</span>` : ''}
-      ${orderedQty > 0 ? `<span class="inline-flex items-center gap-1 text-[10px] font-semibold px-1.5 py-0.5 rounded-md bg-violet-50 dark:bg-violet-500/10 text-violet-600 dark:text-violet-400"><i data-lucide="shopping-cart" class="w-2.5 h-2.5"></i>Zamówione: ${orderedQty} szt.</span>` : ''}
       <span class="inline-flex items-center gap-1 text-[10px] font-semibold px-1.5 py-0.5 rounded-md bg-indigo-50 dark:bg-indigo-500/10 text-indigo-600 dark:text-indigo-400">${cntListed} wyst.</span>
       <span class="inline-flex items-center gap-1 text-[10px] font-semibold px-1.5 py-0.5 rounded-md bg-amber-50 dark:bg-amber-500/10 text-amber-600 dark:text-amber-400">${cntToShip} wysy.</span>
       <span class="inline-flex items-center gap-1 text-[10px] font-semibold px-1.5 py-0.5 rounded-md bg-emerald-50 dark:bg-emerald-500/10 text-emerald-600 dark:text-emerald-400">${cntShipped} got.</span>
@@ -12153,7 +12142,6 @@ function renderResaleProducts(s) {
         <div class="bg-white dark:bg-slate-900 p-3 text-center">
           <p class="text-[10px] text-slate-400 mb-0.5">Posiadane sztuki</p>
           <p class="text-sm font-bold text-indigo-600 dark:text-indigo-400">${p.quantity||0} szt.</p>
-          ${orderedQty > 0 ? `<p class="text-[10px] mt-1 font-semibold text-violet-600 dark:text-violet-400">Obecnie zamówione: ${orderedQty} szt. (jeszcze niedostarczone)</p>` : `<p class="text-[10px] mt-1 text-slate-400">Obecnie zamówione: 0 szt.</p>`}
         </div>
         <div class="bg-white dark:bg-slate-900 p-3 text-center">
           <p class="text-[10px] text-slate-400 mb-0.5">Zakup</p>
@@ -12774,7 +12762,6 @@ function submitResaleProductEdit(e) {
   const buyPrice  = parseFloat(document.getElementById('rep-buyPrice').value) || 0;
   const sellPrice = parseFloat(document.getElementById('rep-sellPrice').value) || 0;
   const weight   = parseFloat(document.getElementById('rep-weight').value) || 0;
-  const quantity = Math.max(0, parseInt(document.getElementById('rep-quantity')?.value, 10) || 0);
   const links    = Array.from(document.querySelectorAll('#rep-links-container .rep-link-input')).map(i=>i.value.trim()).filter(Boolean);
   const link     = links[0] || '';
   const notes    = document.getElementById('rep-notes').value.trim();
@@ -15036,19 +15023,6 @@ function _renderShipmentDeliveryCorrectionModal(id, deliveredAtDefault) {
                  class="w-full rounded-xl border-2 border-teal-200 dark:border-teal-500/30 dark:bg-slate-800 px-4 py-3 text-sm font-bold focus:outline-none focus:ring-2 focus:ring-teal-300">
         </div>
 
-        <div class="rounded-2xl border border-amber-200 dark:border-amber-500/30 overflow-hidden">
-          <div class="px-4 py-3 bg-amber-50 dark:bg-amber-500/10">
-            <p class="text-sm font-semibold">Dokładne dane zakupu</p>
-            <p class="text-[10px] text-slate-400">Możesz potwierdzić lub poprawić rzeczywisty koszt zakupu, wysyłki i wagę przy dostarczeniu paczki.</p>
-          </div>
-          <div class="p-4 grid grid-cols-1 sm:grid-cols-2 gap-3">
-            <div><label class="block text-[10px] font-bold text-slate-400 mb-1">Zakup produktów łącznie</label><input id="delivery-final-buy-total" type="text" inputmode="decimal" value="${Number.isFinite(Number(sh.finalPurchasePrice)) ? Number(sh.finalPurchasePrice) : ''}" placeholder="np. 850,00" class="w-full rounded-xl border border-amber-200 dark:border-amber-500/30 dark:bg-slate-800 px-3 py-2.5 text-sm font-bold"></div>
-            <div><label class="block text-[10px] font-bold text-slate-400 mb-1">Wysyłka łącznie</label><input id="delivery-final-shipping-cost" type="text" inputmode="decimal" value="${Number.isFinite(Number(sh.finalShippingCost)) ? Number(sh.finalShippingCost) : ''}" placeholder="np. 72,00" class="w-full rounded-xl border border-blue-200 dark:border-blue-500/30 dark:bg-slate-800 px-3 py-2.5 text-sm font-bold"></div>
-            <div><label class="block text-[10px] font-bold text-slate-400 mb-1">Łączna waga paczki (opcjonalnie)</label><input id="delivery-final-package-weight" type="text" inputmode="decimal" value="${Number.isFinite(Number(sh.finalPackageWeight)) ? Number(sh.finalPackageWeight) : ''}" placeholder="kg" class="w-full rounded-xl border border-violet-200 dark:border-violet-500/30 dark:bg-slate-800 px-3 py-2.5 text-sm font-bold"></div>
-            <div class="sm:col-span-2 text-[10px] text-slate-400">Dane te będą używane do obliczania rzeczywistego kosztu produktów z tej paczki.</div>
-          </div>
-        </div>
-
         <div class="rounded-2xl bg-slate-50 dark:bg-slate-800/50 border border-slate-100 dark:border-slate-800 p-4">
           <div class="flex items-center justify-between gap-3">
             <div>
@@ -15097,24 +15071,16 @@ function confirmShipmentDelivered(id) {
   const input = document.getElementById('shipment-delivered-at-input');
   if (!sh || !input) return;
 
-  const parseMoney = elId => {
-    const raw = (document.getElementById(elId)?.value || '').replace(',', '.').replace(/[^0-9.-]/g,'');
-    const n = parseFloat(raw);
-    return Number.isFinite(n) && n >= 0 ? +n.toFixed(3) : null;
-  };
-
   const deliveredAt = input.value ? new Date(input.value).getTime() : NaN;
-  if (!Number.isFinite(deliveredAt)) { toast('Podaj prawidłową datę i godzinę dostarczenia.', 'error'); return; }
-  if (Number(sh.orderedAt) && deliveredAt < Number(sh.orderedAt)) { toast('Data dostarczenia nie może być wcześniejsza niż data zamówienia.', 'error'); return; }
+  if (!Number.isFinite(deliveredAt)) {
+    toast('Podaj prawidłową datę i godzinę dostarczenia.', 'error');
+    return;
+  }
 
-  // Dokładne dane kosztowe można wpisać również na etapie dostarczenia.
-  const buy = parseMoney('delivery-final-buy-total');
-  const ship = parseMoney('delivery-final-shipping-cost');
-  const weight = parseMoney('delivery-final-package-weight');
-  if (buy !== null) sh.finalPurchasePrice = +buy.toFixed(2);
-  if (ship !== null) sh.finalShippingCost = +ship.toFixed(2);
-  if (weight !== null) sh.finalPackageWeight = weight;
-  sh.actualCostUpdatedAt = Date.now();
+  if (Number(sh.orderedAt) && deliveredAt < Number(sh.orderedAt)) {
+    toast('Data dostarczenia nie może być wcześniejsza niż data zamówienia.', 'error');
+    return;
+  }
 
   const durationMs = Number(sh.orderedAt) ? deliveredAt - Number(sh.orderedAt) : null;
   const totalMinutes = durationMs != null ? Math.floor(durationMs / 60000) : null;
@@ -15131,28 +15097,12 @@ function confirmShipmentDelivered(id) {
   sh.deliveryDurationText = durationMs != null ? _formatShipmentDuration(durationMs) : null;
   sh.deliveryDurationUpdatedAt = Date.now();
 
-  // Stan magazynowy zwiększamy tylko raz. Chroni to przed podwójnym dodaniem
-  // przy ponownym otwarciu lub zapisaniu danych dostawy.
-  if (!sh.stockAddedAt) {
-    const missing = [];
-    (sh.items || []).forEach(item => {
-      const qty = Math.max(0, parseInt(item.qty, 10) || 0);
-      if (!qty) return;
-      const product = resaleProducts.find(p => p.id === item.productId);
-      if (product) product.quantity = Math.max(0, parseInt(product.quantity, 10) || 0) + qty;
-      else missing.push(item.productId);
-    });
-    sh.stockAddedAt = Date.now();
-    save(SK.resaleProducts, resaleProducts);
-    if (missing.length) console.warn('Nie znaleziono produktów przy dodawaniu stanu z paczki:', missing);
-  }
-
   save(SK.resaleShipments, resaleShipments);
   closeShipmentDeliveryModal();
-  renderAll();
   rerenderShipmentTab();
-  toast(`Paczka dostarczona! Dodano stan produktów z paczki. Czas dostawy: ${durationMs != null ? _formatShipmentDuration(durationMs) : '—'} 🎉`);
+  toast(`Paczka dostarczona! Czas dostawy: ${durationMs != null ? _formatShipmentDuration(durationMs) : '—'} 🎉`);
 }
+
 function markShipmentDelivered(id) {
   const sh = resaleShipments.find(x => x.id === id);
   if (!sh || !sh.ordered) return;
