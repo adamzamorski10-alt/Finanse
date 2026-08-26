@@ -11935,6 +11935,15 @@ let resaleProductSortDir  = 'asc';    // 'asc'|'desc'
 let resaleProductSeasonFilter = 'all'; // 'all'|'wiosna'|'lato'|'jesien'|'zima'
 let resaleProductStatusFilter = 'all'; // 'all'|'has_stock'|'listed'|'to_ship'|'shipped'|'no_stock'
 
+// Sztuki aktualnie zamówione: paczka ma status Zamówiona, ale nie została jeszcze dostarczona.
+function getResaleProductOrderedQty(productId) {
+  return resaleShipments.reduce((sum, sh) => {
+    if (!sh || !sh.ordered || sh.deliveredAt) return sum;
+    const item = (sh.items || []).find(i => i.productId === productId);
+    return sum + (item ? Math.max(0, parseInt(item.qty, 10) || 0) : 0);
+  }, 0);
+}
+
 function renderResaleProducts(s) {
   const editId  = resaleProductEditId;
   const query   = resaleProductSearch.toLowerCase().trim();
@@ -12013,6 +12022,7 @@ function renderResaleProducts(s) {
     const estSellPrice = p.sellPrice || 0;
     const estProfit    = estSellPrice > 0 ? estSellPrice - totalCost : null;
     const estROI       = estProfit != null && totalCost > 0 ? (estProfit / totalCost) * 100 : null;
+    const orderedQty    = getResaleProductOrderedQty(p.id);
 
     // ── EDIT MODE ──
     if (editId === p.id) {
@@ -12130,6 +12140,7 @@ function renderResaleProducts(s) {
     const statusPills = `
       ${seasonSection}
       ${(p.quantity||0) > 0 ? `<span class="inline-flex items-center gap-1 text-[10px] font-semibold px-1.5 py-0.5 rounded-md bg-blue-50 dark:bg-blue-500/10 text-blue-600 dark:text-blue-400"><i data-lucide="box" class="w-2.5 h-2.5"></i>${p.quantity||0} szt.</span>` : ''}
+      ${orderedQty > 0 ? `<span class="inline-flex items-center gap-1 text-[10px] font-semibold px-1.5 py-0.5 rounded-md bg-violet-50 dark:bg-violet-500/10 text-violet-600 dark:text-violet-400"><i data-lucide="shopping-cart" class="w-2.5 h-2.5"></i>Zamówione: ${orderedQty} szt.</span>` : ''}
       <span class="inline-flex items-center gap-1 text-[10px] font-semibold px-1.5 py-0.5 rounded-md bg-indigo-50 dark:bg-indigo-500/10 text-indigo-600 dark:text-indigo-400">${cntListed} wyst.</span>
       <span class="inline-flex items-center gap-1 text-[10px] font-semibold px-1.5 py-0.5 rounded-md bg-amber-50 dark:bg-amber-500/10 text-amber-600 dark:text-amber-400">${cntToShip} wysy.</span>
       <span class="inline-flex items-center gap-1 text-[10px] font-semibold px-1.5 py-0.5 rounded-md bg-emerald-50 dark:bg-emerald-500/10 text-emerald-600 dark:text-emerald-400">${cntShipped} got.</span>
@@ -12142,6 +12153,7 @@ function renderResaleProducts(s) {
         <div class="bg-white dark:bg-slate-900 p-3 text-center">
           <p class="text-[10px] text-slate-400 mb-0.5">Posiadane sztuki</p>
           <p class="text-sm font-bold text-indigo-600 dark:text-indigo-400">${p.quantity||0} szt.</p>
+          ${orderedQty > 0 ? `<p class="text-[10px] mt-1 font-semibold text-violet-600 dark:text-violet-400">Obecnie zamówione: ${orderedQty} szt. (jeszcze niedostarczone)</p>` : `<p class="text-[10px] mt-1 text-slate-400">Obecnie zamówione: 0 szt.</p>`}
         </div>
         <div class="bg-white dark:bg-slate-900 p-3 text-center">
           <p class="text-[10px] text-slate-400 mb-0.5">Zakup</p>
@@ -12762,6 +12774,7 @@ function submitResaleProductEdit(e) {
   const buyPrice  = parseFloat(document.getElementById('rep-buyPrice').value) || 0;
   const sellPrice = parseFloat(document.getElementById('rep-sellPrice').value) || 0;
   const weight   = parseFloat(document.getElementById('rep-weight').value) || 0;
+  const quantity = Math.max(0, parseInt(document.getElementById('rep-quantity')?.value, 10) || 0);
   const links    = Array.from(document.querySelectorAll('#rep-links-container .rep-link-input')).map(i=>i.value.trim()).filter(Boolean);
   const link     = links[0] || '';
   const notes    = document.getElementById('rep-notes').value.trim();
@@ -13954,8 +13967,8 @@ function updateShipmentSellPrice(productId, value) {
 /* ── Pomocnicza funkcja obliczeniowa (shared) ── */
 function _getShipmentActualCosts(sh) {
   const hasActual = !!(sh && sh.ordered && (
-    Number.isFinite(Number(sh.finalPurchasePrice)) ||
-    Number.isFinite(Number(sh.finalShippingCost))
+    (sh.finalPurchasePrice !== null && sh.finalPurchasePrice !== undefined && Number.isFinite(Number(sh.finalPurchasePrice))) ||
+    (sh.finalShippingCost !== null && sh.finalShippingCost !== undefined && Number.isFinite(Number(sh.finalShippingCost)))
   ));
   const estimated = _calcShipmentDraftEstimate(sh?.items || []);
   if (!hasActual) return {
@@ -14052,14 +14065,20 @@ function _calcShipmentDraft(items, shipment=null) {
     totalSell:est.totalSell,
     totalProfit,
     hasSell:rows.some(r=>r.sellOne>0),
-    hasActual:actual.hasActual
+    hasActual:actual.hasActual,
+    estimatedBuy:est.totalBuy,
+    estimatedShip:est.totalShip,
+    estimatedCost:est.totalCost,
+    estimatedWeight:est.totalWeight,
+    actualWeight:(shipment && Number.isFinite(Number(shipment.finalPackageWeight)) ? Number(shipment.finalPackageWeight) : null)
   };
 }
 
 /* ── Odśwież tylko podsumowanie i badge'y zysku — BEZ dotykania inputów ── */
 function _refreshShipmentSummaryOnly() {
   const draft = getShipmentDraft();
-  const calc = _calcShipmentDraft(draft.items);
+  const editingShipment = _editingShipmentId ? resaleShipments.find(x => x.id === _editingShipmentId) : null;
+  const calc = _calcShipmentDraft(draft.items, editingShipment || null);
 
   // Aktualizuj badge'y zysku per produkt
   calc.rows.forEach(r => {
@@ -14215,47 +14234,32 @@ function _renderShipmentCostHTML(calc) {
   const actualLabel = calc.hasActual
     ? `<span class="inline-flex items-center gap-1 ml-1 text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-emerald-100 dark:bg-emerald-500/20 text-emerald-700 dark:text-emerald-400"><i data-lucide="check-circle" class="w-2.5 h-2.5"></i>RZECZYWISTE</span>`
     : '';
+  const compareValue = (actual, estimated, unit='zł', digits=2) => {
+    const a = unit === 'kg' ? `${Number(actual).toFixed(digits)} kg` : fmt(actual);
+    const e = unit === 'kg' ? `${Number(estimated).toFixed(digits)} kg` : fmt(estimated);
+    return `<div class="text-right"><div class="font-bold text-emerald-600 dark:text-emerald-400">Rzeczywiste: ${a}</div><div class="text-[10px] text-slate-400 mt-0.5">Szacowane: ${e}</div></div>`;
+  };
+  const weightActual = calc.actualWeight;
   return `<div class="bg-gradient-to-r from-indigo-500 to-violet-500 p-4 text-white">
       <p class="text-indigo-100 text-[10px] font-bold uppercase tracking-widest mb-1">${calc.hasActual ? 'Rzeczywisty koszt całkowity' : 'Szacowany koszt całkowity'} ${actualLabel}</p>
       <p class="text-3xl font-black tracking-tight">${fmt(calc.totalCost)}</p>
-      <p class="text-indigo-200 text-xs mt-1">${calc.totalUnits} sztuk · ${calc.totalWeight.toFixed(2)} kg łącznie</p>
+      <p class="text-indigo-200 text-xs mt-1">${calc.totalUnits} sztuk · ${calc.totalWeight.toFixed(2)} kg użyte w podsumowaniu</p>
     </div>
     <div class="bg-white dark:bg-slate-900 divide-y divide-slate-50 dark:divide-slate-800">
-      <div class="flex items-center justify-between px-4 py-2.5">
-        <div class="flex items-center gap-2 text-sm text-slate-500">
-          <div class="w-6 h-6 rounded-lg bg-amber-50 dark:bg-amber-500/10 flex items-center justify-center"><i data-lucide="shopping-bag" class="w-3.5 h-3.5 text-amber-500"></i></div>
-          ${calc.hasActual ? 'Rzeczywisty zakup' : 'Koszt zakupu'}
-        </div>
-        <span class="font-bold text-amber-600 dark:text-amber-400">${fmt(calc.totalBuy)}</span>
+      <div class="flex items-center justify-between px-4 py-2.5 gap-3">
+        <div class="flex items-center gap-2 text-sm text-slate-500"><div class="w-6 h-6 rounded-lg bg-amber-50 dark:bg-amber-500/10 flex items-center justify-center"><i data-lucide="shopping-bag" class="w-3.5 h-3.5 text-amber-500"></i></div>${calc.hasActual ? 'Koszt zakupu' : 'Koszt zakupu (szacowany)'}</div>
+        ${calc.hasActual ? compareValue(calc.totalBuy, calc.estimatedBuy) : `<span class="font-bold text-amber-600 dark:text-amber-400">${fmt(calc.totalBuy)}</span>`}
       </div>
-      <div class="flex items-center justify-between px-4 py-2.5">
-        <div class="flex items-center gap-2 text-sm text-slate-500">
-          <div class="w-6 h-6 rounded-lg bg-blue-50 dark:bg-blue-500/10 flex items-center justify-center"><i data-lucide="truck" class="w-3.5 h-3.5 text-blue-500"></i></div>
-          ${calc.hasActual ? 'Rzeczywista wysyłka' : `Koszt wysyłki (~${RESALE_SHIP_PER_KG} zł/kg)`}
-        </div>
-        <span class="font-bold text-blue-600 dark:text-blue-400">${fmt(calc.totalShip)}</span>
+      <div class="flex items-center justify-between px-4 py-2.5 gap-3">
+        <div class="flex items-center gap-2 text-sm text-slate-500"><div class="w-6 h-6 rounded-lg bg-blue-50 dark:bg-blue-500/10 flex items-center justify-center"><i data-lucide="truck" class="w-3.5 h-3.5 text-blue-500"></i></div>${calc.hasActual ? 'Koszt wysyłki' : `Koszt wysyłki (~${RESALE_SHIP_PER_KG} zł/kg)`}</div>
+        ${calc.hasActual ? compareValue(calc.totalShip, calc.estimatedShip) : `<span class="font-bold text-blue-600 dark:text-blue-400">${fmt(calc.totalShip)}</span>`}
       </div>
-      <div class="flex items-center justify-between px-4 py-2.5">
-        <div class="flex items-center gap-2 text-sm text-slate-500">
-          <div class="w-6 h-6 rounded-lg bg-slate-50 dark:bg-slate-700 flex items-center justify-center"><i data-lucide="weight" class="w-3.5 h-3.5 text-slate-400"></i></div>
-          Łączna waga paczki
-        </div>
-        <span class="font-bold">${calc.totalWeight.toFixed(2)} kg</span>
+      <div class="flex items-center justify-between px-4 py-2.5 gap-3">
+        <div class="flex items-center gap-2 text-sm text-slate-500"><div class="w-6 h-6 rounded-lg bg-slate-50 dark:bg-slate-700 flex items-center justify-center"><i data-lucide="weight" class="w-3.5 h-3.5 text-slate-400"></i></div>Łączna waga paczki</div>
+        ${calc.hasActual ? (weightActual !== null ? compareValue(weightActual, calc.estimatedWeight, 'kg', 2) : `<div class="text-right"><div class="font-bold text-slate-500">Rzeczywista: brak danych</div><div class="text-[10px] text-slate-400 mt-0.5">Szacowana: ${calc.estimatedWeight.toFixed(2)} kg</div></div>`) : `<span class="font-bold">${calc.totalWeight.toFixed(2)} kg</span>`}
       </div>
-      <div class="flex items-center justify-between px-4 py-2.5">
-        <div class="flex items-center gap-2 text-sm text-slate-500">
-          <div class="w-6 h-6 rounded-lg bg-violet-50 dark:bg-violet-500/10 flex items-center justify-center"><i data-lucide="box" class="w-3.5 h-3.5 text-violet-400"></i></div>
-          Liczba sztuk
-        </div>
-        <span class="font-bold">${calc.totalUnits} szt.</span>
-      </div>
-      <div class="flex items-center justify-between px-4 py-2.5 bg-slate-50 dark:bg-slate-800/60">
-        <div class="flex items-center gap-2 text-sm text-slate-500">
-          <div class="w-6 h-6 rounded-lg bg-emerald-50 dark:bg-emerald-500/10 flex items-center justify-center"><i data-lucide="tag" class="w-3.5 h-3.5 text-emerald-500"></i></div>
-          Śr. koszt za sztukę
-        </div>
-        <span class="font-bold text-emerald-600 dark:text-emerald-400">${calc.totalUnits > 0 ? fmt(calc.totalCost / calc.totalUnits) : '—'}/szt.</span>
-      </div>
+      <div class="flex items-center justify-between px-4 py-2.5"><div class="flex items-center gap-2 text-sm text-slate-500"><div class="w-6 h-6 rounded-lg bg-violet-50 dark:bg-violet-500/10 flex items-center justify-center"><i data-lucide="box" class="w-3.5 h-3.5 text-violet-400"></i></div>Liczba sztuk</div><span class="font-bold">${calc.totalUnits} szt.</span></div>
+      <div class="flex items-center justify-between px-4 py-2.5 bg-slate-50 dark:bg-slate-800/60"><div class="flex items-center gap-2 text-sm text-slate-500"><div class="w-6 h-6 rounded-lg bg-emerald-50 dark:bg-emerald-500/10 flex items-center justify-center"><i data-lucide="tag" class="w-3.5 h-3.5 text-emerald-500"></i></div>Śr. koszt za sztukę</div><span class="font-bold text-emerald-600 dark:text-emerald-400">${calc.totalUnits > 0 ? fmt(calc.totalCost / calc.totalUnits) : '—'}/szt.</span></div>
     </div>`;
 }
 
@@ -14264,7 +14268,7 @@ function exportShipmentPDF(shipmentId) {
   const sh = shipmentId ? resaleShipments.find(x => x.id === shipmentId) : null;
   const isDraft = !sh;
   const items = sh ? sh.items : (getShipmentDraft().items);
-  const calc = _calcShipmentDraft(items);
+  const calc = _calcShipmentDraft(items, sh || null);
   if (!calc.rows.length) { toast('Paczka jest pusta.', 'error'); return; }
   const name = sh ? (sh.name || 'Paczka') : 'Paczka (projekt)';
   const dateStr = sh ? new Date(sh.orderedAt || sh.createdAt).toLocaleDateString('pl-PL') : new Date().toLocaleDateString('pl-PL');
@@ -14337,7 +14341,8 @@ ${calc.hasSell ? `<p style="font-size:12px;color:#64748b;margin:0 0 20px">Marża
 
 function renderResaleShipment(s) {
   const draft = getShipmentDraft();
-  const calc = _calcShipmentDraft(draft.items);
+  const editingShipment = _editingShipmentId ? resaleShipments.find(x => x.id === _editingShipmentId) : null;
+  const calc = _calcShipmentDraft(draft.items, editingShipment || null);
 
   // ── Zapisane paczki ──
   const saved = [...resaleShipments].sort((a,b) => b.createdAt - a.createdAt);
@@ -14413,7 +14418,7 @@ function renderResaleShipment(s) {
   // ── Saved shipments ──
   const savedHTML = saved.length === 0 ? '' : `
   <!-- Historia marż — wykres liniowy -->
-  ${saved.filter(sh => _calcShipmentDraft(sh.items).totalProfit !== null).length >= 2 ? `
+  ${saved.filter(sh => _calcShipmentDraft(sh.items, sh).totalProfit !== null).length >= 2 ? `
   <div class="bg-white dark:bg-slate-900 rounded-2xl border border-slate-100 dark:border-slate-800 overflow-hidden">
     <div class="px-4 py-3 border-b border-slate-100 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/50 flex items-center justify-between">
       <p class="text-sm font-semibold flex items-center gap-2"><i data-lucide="line-chart" class="w-4 h-4 text-indigo-400"></i>Historia marż paczek</p>
@@ -14431,7 +14436,7 @@ function renderResaleShipment(s) {
     </div>
     <div class="divide-y divide-slate-50 dark:divide-slate-800">
       ${saved.map(sh => {
-        const shCalc = _calcShipmentDraft(sh.items);
+        const shCalc = _calcShipmentDraft(sh.items, sh);
         const date = sh.orderedAt ? new Date(sh.orderedAt).toLocaleDateString('pl-PL') : new Date(sh.createdAt).toLocaleDateString('pl-PL');
         const profitBadge = shCalc.totalProfit !== null
           ? `<span class="text-[10px] font-bold px-2 py-0.5 rounded-full ${shCalc.totalProfit >= 0 ? 'bg-emerald-100 dark:bg-emerald-500/20 text-emerald-700 dark:text-emerald-400' : 'bg-rose-100 dark:bg-rose-500/20 text-rose-700 dark:text-rose-400'}">${shCalc.totalProfit >= 0 ? '+' : '−'}${fmt(Math.abs(shCalc.totalProfit))} szac.</span>`
@@ -14490,6 +14495,7 @@ function renderResaleShipment(s) {
               <button onclick="openShipmentPreviewModal('${sh.id}')" title="Podgląd paczki" class="p-1.5 rounded-lg text-slate-400 hover:text-indigo-500 hover:bg-indigo-50 dark:hover:bg-indigo-500/10 transition"><i data-lucide="eye" class="w-4 h-4"></i></button>
               ${!sh.ordered ? `<button onclick="markShipmentOrdered('${sh.id}')" title="Oznacz jako zamówioną" class="flex items-center gap-1 text-[11px] font-bold px-2.5 py-1.5 rounded-xl bg-emerald-50 dark:bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-200 dark:border-emerald-500/30 hover:bg-emerald-100 transition"><i data-lucide="check" class="w-3 h-3"></i>Zamówiona</button>` : ''}
               ${sh.ordered && !isDelivered ? `<button onclick="markShipmentDelivered('${sh.id}')" title="Oznacz jako dostarczoną" class="flex items-center gap-1 text-[11px] font-bold px-2.5 py-1.5 rounded-xl bg-teal-50 dark:bg-teal-500/10 text-teal-600 dark:text-teal-400 border border-teal-200 dark:border-teal-500/30 hover:bg-teal-100 transition"><i data-lucide="package-check" class="w-3 h-3"></i>Dostarczona</button>` : ''}
+              ${sh.ordered ? `<button onclick="openShipmentActualCostsModal('${sh.id}')" title="Edytuj rzeczywiste koszty" class="flex items-center gap-1 text-[11px] font-bold px-2.5 py-1.5 rounded-xl bg-amber-50 dark:bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-200 dark:border-amber-500/30 hover:bg-amber-100 transition"><i data-lucide="wallet-cards" class="w-3 h-3"></i>Koszty</button>` : ''}
               <button onclick="exportShipmentPDF('${sh.id}')" title="Eksportuj do PDF" class="p-1.5 rounded-lg text-slate-400 hover:text-violet-500 hover:bg-violet-50 dark:hover:bg-violet-500/10 transition"><i data-lucide="file-text" class="w-4 h-4"></i></button>
               <button onclick="loadShipmentDraft('${sh.id}')" title="Edytuj tę paczkę" class="flex items-center gap-1 text-[11px] font-bold px-2.5 py-1.5 rounded-xl bg-indigo-50 dark:bg-indigo-500/10 text-indigo-600 dark:text-indigo-400 border border-indigo-200 dark:border-indigo-500/30 hover:bg-indigo-100 transition"><i data-lucide="pencil" class="w-3 h-3"></i>Edytuj</button>
               <button onclick="deleteShipment('${sh.id}')" class="p-1.5 rounded-lg text-slate-300 hover:text-rose-500 hover:bg-rose-50 dark:hover:bg-rose-500/10 transition"><i data-lucide="trash-2" class="w-4 h-4"></i></button>
@@ -14547,6 +14553,49 @@ function renderResaleShipment(s) {
       <div id="shipment-summary-section" class="mt-2 space-y-2">
         ${_renderShipmentSummaryHTML(calc)}
       </div>
+
+      ${_editingShipmentId && editingShipment && editingShipment.ordered ? `
+      <div class="px-4 pt-4">
+        <div class="rounded-2xl border border-emerald-200 dark:border-emerald-500/30 overflow-hidden">
+          <div class="px-4 py-3 bg-emerald-50 dark:bg-emerald-500/10">
+            <p class="text-sm font-bold flex items-center gap-2"><i data-lucide="wallet-cards" class="w-4 h-4 text-emerald-500"></i>Rzeczywiste koszty paczki</p>
+            <p class="text-[10px] text-slate-500 mt-1">Edytujesz zapisane rzeczywiste dane. Te same wartości są używane w liście, podglądzie, PDF i kalkulacji kosztu produktu przy sprzedaży.</p>
+          </div>
+          <div class="p-4 grid grid-cols-1 sm:grid-cols-3 gap-3">
+            <div>
+              <label class="block text-[10px] font-bold text-slate-400 mb-1">Zakup produktów łącznie</label>
+              <input id="edit-final-buy-total" type="text" inputmode="decimal" value="${editingShipment.finalPurchasePrice != null && Number.isFinite(Number(editingShipment.finalPurchasePrice)) ? Number(editingShipment.finalPurchasePrice) : ''}" placeholder="np. 850,00"
+                class="w-full rounded-xl border border-amber-200 dark:border-amber-500/30 dark:bg-slate-800 px-3 py-2.5 text-sm font-bold focus:outline-none focus:ring-2 focus:ring-amber-300">
+            </div>
+            <div>
+              <label class="block text-[10px] font-bold text-slate-400 mb-1">Wysyłka łącznie</label>
+              <input id="edit-final-shipping-cost" type="text" inputmode="decimal" value="${editingShipment.finalShippingCost != null && Number.isFinite(Number(editingShipment.finalShippingCost)) ? Number(editingShipment.finalShippingCost) : ''}" placeholder="np. 72,00"
+                class="w-full rounded-xl border border-blue-200 dark:border-blue-500/30 dark:bg-slate-800 px-3 py-2.5 text-sm font-bold focus:outline-none focus:ring-2 focus:ring-blue-300">
+            </div>
+            <div>
+              <label class="block text-[10px] font-bold text-slate-400 mb-1">Łączna rzeczywista waga</label>
+              <input id="edit-final-package-weight" type="text" inputmode="decimal" value="${editingShipment.finalPackageWeight != null && Number.isFinite(Number(editingShipment.finalPackageWeight)) ? Number(editingShipment.finalPackageWeight) : ''}" placeholder="kg"
+                class="w-full rounded-xl border border-violet-200 dark:border-violet-500/30 dark:bg-slate-800 px-3 py-2.5 text-sm font-bold focus:outline-none focus:ring-2 focus:ring-violet-300">
+            </div>
+          </div>
+          <div class="px-4 pb-4 border-t border-slate-100 dark:border-slate-800">
+            <p class="text-[10px] font-bold uppercase tracking-wider text-slate-400 mt-3 mb-2">Opcjonalnie: rzeczywisty zakup poszczególnych produktów</p>
+            <div class="space-y-2">
+              ${(draft.items || []).map(item => {
+                const p = resaleProducts.find(x => x.id === item.productId);
+                const existing = editingShipment.finalPurchaseBreakdown && editingShipment.finalPurchaseBreakdown[item.productId] != null
+                  ? Number(editingShipment.finalPurchaseBreakdown[item.productId]) : '';
+                return `<div class="grid grid-cols-[1fr_110px] items-center gap-3">
+                  <div class="min-w-0"><p class="text-xs font-semibold truncate">${escH(p?.name || 'Usunięty produkt')} <span class="text-slate-400 font-normal">×${Math.max(1, parseInt(item.qty,10)||1)}</span></p></div>
+                  <input id="edit-final-buy-item-${item.productId}" type="text" inputmode="decimal" value="${existing}" placeholder="łącznie zł"
+                    class="w-full rounded-xl border border-slate-200 dark:border-slate-700 dark:bg-slate-800 px-3 py-2 text-xs text-right focus:outline-none focus:ring-2 focus:ring-amber-300">
+                </div>`;
+              }).join('')}
+            </div>
+            <p class="text-[10px] text-slate-400 mt-2">Jeśli wpiszesz wartości przy produktach, ich suma musi być równa łącznemu kosztowi zakupu. Jeśli zostawisz wszystkie pola puste, obowiązuje wyłącznie kwota łączna.</p>
+          </div>
+        </div>
+      </div>` : ''}
 
       <!-- ── Przyciski akcji paczki ── -->
       <div class="px-4 pb-4 space-y-2">
@@ -14623,33 +14672,115 @@ function clearShipmentDraft() {
   rerenderShipmentTab();
 }
 
+function _parseShipmentMoneyInput(id, decimals = 2) {
+  const el = document.getElementById(id);
+  if (!el) return undefined; // pole nie występuje w aktualnym widoku
+  const raw = String(el.value || '').trim().replace(/\s/g, '').replace(',', '.').replace(/[^0-9.-]/g, '');
+  if (raw === '') return null;
+  const n = parseFloat(raw);
+  return Number.isFinite(n) && n >= 0 ? +n.toFixed(decimals) : null;
+}
+
+function _reconcileDeliveredShipmentStock(oldItems, newItems) {
+  const oldQty = new Map();
+  const newQty = new Map();
+  (oldItems || []).forEach(i => oldQty.set(i.productId, (oldQty.get(i.productId) || 0) + Math.max(0, parseInt(i.qty, 10) || 0)));
+  (newItems || []).forEach(i => newQty.set(i.productId, (newQty.get(i.productId) || 0) + Math.max(0, parseInt(i.qty, 10) || 0)));
+  const ids = new Set([...oldQty.keys(), ...newQty.keys()]);
+  ids.forEach(productId => {
+    const delta = (newQty.get(productId) || 0) - (oldQty.get(productId) || 0);
+    if (!delta) return;
+    const product = resaleProducts.find(p => p.id === productId);
+    if (product) product.quantity = Math.max(0, (parseInt(product.quantity, 10) || 0) + delta);
+  });
+}
+
 function saveShipmentDraft() {
   const draft = getShipmentDraft();
   if (!draft.items.length) { toast('Dodaj przynajmniej jeden produkt.', 'error'); return; }
   const nameEl = document.getElementById('ship-name-input');
   const name = nameEl ? nameEl.value.trim() : '';
+
   if (_editingShipmentId) {
-    // Edit mode: overwrite existing shipment
     const idx = resaleShipments.findIndex(x => x.id === _editingShipmentId);
     if (idx >= 0) {
-      resaleShipments[idx] = {
-        ...resaleShipments[idx],
-        name: name || resaleShipments[idx].name,
-        items: draft.items.map(i => ({ productId: i.productId, qty: i.qty, sellPrice: i.sellPrice || 0 })),
+      const previous = resaleShipments[idx];
+      const nextItems = draft.items.map(i => ({
+        productId: i.productId,
+        qty: Math.max(1, parseInt(i.qty, 10) || 1),
+        sellPrice: Number(i.sellPrice) || 0
+      }));
+
+      const buy = _parseShipmentMoneyInput('edit-final-buy-total', 2);
+      const ship = _parseShipmentMoneyInput('edit-final-shipping-cost', 2);
+      const weight = _parseShipmentMoneyInput('edit-final-package-weight', 3);
+
+      if (buy === null || ship === null) {
+        toast('Podaj prawidłowy rzeczywisty koszt zakupu i wysyłki.', 'error');
+        return;
+      }
+
+      const breakdown = {};
+      let invalidBreakdown = false;
+      nextItems.forEach(item => {
+        const field = document.getElementById('edit-final-buy-item-' + item.productId);
+        const raw = field ? String(field.value || '').trim() : '';
+        if (!raw) return; // puste pole oznacza brak rozbicia dla tego produktu
+        const val = _parseShipmentMoneyInput('edit-final-buy-item-' + item.productId, 2);
+        if (val === null || val === undefined) invalidBreakdown = true;
+        else breakdown[item.productId] = val;
+      });
+      if (invalidBreakdown) {
+        toast('Wpisz prawidłową kwotę zakupu produktu albo pozostaw pole puste.', 'error');
+        return;
+      }
+      const breakdownValues = Object.values(breakdown);
+      if (breakdownValues.length && buy !== undefined && buy !== null) {
+        const sum = breakdownValues.reduce((a, v) => a + v, 0);
+        if (Math.abs(sum - buy) > 0.01) {
+          toast(`Suma rzeczywistych kosztów produktów (${fmt(sum)}) nie zgadza się z zakupem łącznym (${fmt(buy)}).`, 'error');
+          return;
+        }
+      }
+
+      const updated = {
+        ...previous,
+        name: name || previous.name,
+        items: nextItems
       };
+
+      if (buy !== undefined) updated.finalPurchasePrice = buy;
+      if (ship !== undefined) updated.finalShippingCost = ship;
+      if (weight !== undefined) updated.finalPackageWeight = weight === null ? null : weight;
+      if (document.getElementById('edit-final-buy-total')) {
+        updated.finalPurchaseBreakdown = breakdownValues.length ? breakdown : null;
+      }
+      if (buy !== undefined || ship !== undefined || weight !== undefined || document.getElementById('edit-final-buy-total')) {
+        updated.actualCostUpdatedAt = Date.now();
+      }
+
+      // Jeżeli paczka była już dostarczona, stan magazynowy musi odzwierciedlać
+      // zmianę ilości/produktów w paczce, a nie zostać dodany drugi raz.
+      if (previous.deliveredAt && previous.stockAddedAt) {
+        _reconcileDeliveredShipmentStock(previous.items, nextItems);
+        save(SK.resaleProducts, resaleProducts);
+      }
+
+      resaleShipments[idx] = updated;
       save(SK.resaleShipments, resaleShipments);
       _editingShipmentId = null;
       _shipmentDraft = { items: [] };
       const s = incomeSources.find(x => x.id === selectedSourceId);
       if (s) renderResaleDetail(s);
-      toast('Paczka zaktualizowana ✓');
+      toast(previous.deliveredAt ? 'Paczka dostarczona i jej rzeczywiste koszty zostały zaktualizowane ✓' : 'Paczka zaktualizowana ✓');
       return;
     }
   }
+
   resaleShipments.push({
     id: uid(),
     name: name || `Paczka ${new Date().toLocaleDateString('pl-PL')}`,
-    items: draft.items.map(i => ({ productId: i.productId, qty: i.qty, sellPrice: i.sellPrice || 0 })),
+    items: draft.items.map(i => ({ productId: i.productId, qty: Math.max(1, parseInt(i.qty, 10) || 1), sellPrice: Number(i.sellPrice) || 0 })),
     createdAt: Date.now(),
     ordered: false,
     orderedAt: null,
@@ -14660,6 +14791,42 @@ function saveShipmentDraft() {
   if (s) renderResaleDetail(s);
   toast('Paczka zapisana ✓');
 }
+function openShipmentActualCostsModal(id) {
+  const sh = resaleShipments.find(x => x.id === id);
+  const wrap = document.getElementById('shipment-delivery-modal-wrap');
+  if (!sh || !wrap) return;
+  const est = _calcShipmentDraftEstimate(sh.items || []);
+  const breakdown = sh.finalPurchaseBreakdown && typeof sh.finalPurchaseBreakdown === 'object' ? sh.finalPurchaseBreakdown : {};
+  const val = (x) => x != null && Number.isFinite(Number(x)) ? Number(x) : '';
+  wrap.innerHTML = `<div class="fixed inset-0 z-50 flex items-center justify-center p-4" style="background:rgba(0,0,0,.45)" onclick="if(event.target===this)closeShipmentDeliveryModal()"><div class="bg-white dark:bg-slate-900 rounded-2xl border border-slate-100 dark:border-slate-800 shadow-2xl w-full max-w-lg max-h-[90vh] overflow-y-auto"><div class="px-5 py-4 border-b border-slate-100 dark:border-slate-800 flex items-start justify-between gap-3"><div><p class="font-bold text-slate-800 dark:text-slate-100 flex items-center gap-2"><i data-lucide="wallet-cards" class="w-4 h-4 text-amber-500"></i>Edytuj rzeczywiste koszty</p><p class="text-xs text-slate-400 mt-1">${escH(sh.name || 'Paczka')} · status paczki i czas zamówienia nie zostaną zmienione.</p></div><button onclick="closeShipmentDeliveryModal()" class="p-1.5 rounded-lg text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800"><i data-lucide="x" class="w-4 h-4"></i></button></div><div class="p-5 space-y-4">
+    <div class="grid grid-cols-1 sm:grid-cols-3 gap-2 text-xs"><div class="rounded-xl bg-slate-50 dark:bg-slate-800 p-3"><p class="text-slate-400">Szac. zakup</p><p class="font-bold mt-1">${fmt(est.totalBuy)}</p></div><div class="rounded-xl bg-slate-50 dark:bg-slate-800 p-3"><p class="text-slate-400">Szac. wysyłka</p><p class="font-bold mt-1">${fmt(est.totalShip)}</p></div><div class="rounded-xl bg-slate-50 dark:bg-slate-800 p-3"><p class="text-slate-400">Szac. waga</p><p class="font-bold mt-1">${est.totalWeight.toFixed(2)} kg</p></div></div>
+    <div><label class="block text-xs font-bold text-slate-500 mb-1">Rzeczywisty koszt zakupu</label><input id="quick-final-buy-total" type="text" inputmode="decimal" value="${val(sh.finalPurchasePrice)}" class="w-full rounded-xl border border-amber-200 dark:border-amber-500/30 dark:bg-slate-800 px-3 py-2.5 font-bold"></div>
+    <div><label class="block text-xs font-bold text-slate-500 mb-1">Rzeczywisty koszt wysyłki</label><input id="quick-final-shipping-cost" type="text" inputmode="decimal" value="${val(sh.finalShippingCost)}" class="w-full rounded-xl border border-blue-200 dark:border-blue-500/30 dark:bg-slate-800 px-3 py-2.5 font-bold"></div>
+    <div><label class="block text-xs font-bold text-slate-500 mb-1">Rzeczywista łączna waga <span class="font-normal text-slate-400">(opcjonalnie)</span></label><input id="quick-final-package-weight" type="text" inputmode="decimal" value="${val(sh.finalPackageWeight)}" class="w-full rounded-xl border border-violet-200 dark:border-violet-500/30 dark:bg-slate-800 px-3 py-2.5 font-bold"></div>
+    <div class="rounded-xl border border-slate-100 dark:border-slate-800 p-3 space-y-2"><p class="text-xs font-bold text-slate-500">Opcjonalnie: rzeczywisty zakup produktów</p>${est.rows.map(r=>`<div class="grid grid-cols-[1fr_100px] gap-2 items-center"><span class="text-xs truncate">${escH(r.p.name)} ×${r.qty}</span><input id="quick-final-buy-item-${r.p.id}" type="text" inputmode="decimal" value="${breakdown[r.p.id] != null ? Number(breakdown[r.p.id]) : ''}" placeholder="zł" class="rounded-lg border border-slate-200 dark:border-slate-700 dark:bg-slate-800 px-2 py-1.5 text-xs text-right"></div>`).join('')}<p class="text-[10px] text-slate-400">Jeżeli wpiszesz rozbicie, suma musi być równa rzeczywistemu zakupowi łącznemu.</p></div>
+    <div class="flex gap-2 pt-1"><button onclick="closeShipmentDeliveryModal()" class="flex-1 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 text-sm font-semibold text-slate-500">Anuluj</button><button onclick="saveShipmentActualCosts('${id}')" class="flex-1 py-2.5 rounded-xl bg-amber-500 text-white text-sm font-bold">Zapisz koszty</button></div>
+  </div></div></div>`;
+  lucide.createIcons();
+}
+
+function saveShipmentActualCosts(id) {
+  const sh = resaleShipments.find(x => x.id === id);
+  if (!sh) return;
+  const parse = (elId, decimals=2, optional=false) => {
+    const raw = String(document.getElementById(elId)?.value || '').trim().replace(',', '.').replace(/[^0-9.-]/g,'');
+    if (!raw) return optional ? null : undefined;
+    const n = Number(raw); return Number.isFinite(n) && n >= 0 ? Number(n.toFixed(decimals)) : undefined;
+  };
+  const buy=parse('quick-final-buy-total'), ship=parse('quick-final-shipping-cost'), weight=parse('quick-final-package-weight',3,true);
+  if (buy === undefined || ship === undefined) { toast('Podaj prawidłowy rzeczywisty koszt zakupu i wysyłki.', 'error'); return; }
+  const breakdown={}; let invalid=false;
+  (sh.items||[]).forEach(i=>{ const v=parse('quick-final-buy-item-'+i.productId,2,true); if(v===undefined) invalid=true; else if(v!==null) breakdown[i.productId]=v; });
+  if (invalid) { toast('Popraw kwoty w rozbiciu kosztów produktów.', 'error'); return; }
+  const vals=Object.values(breakdown);
+  if (vals.length) { const sum=vals.reduce((a,v)=>a+v,0); if(Math.abs(sum-buy)>0.01){ toast(`Suma rozbicia (${fmt(sum)}) musi być równa zakupowi łącznemu (${fmt(buy)}).`, 'error'); return; } }
+  sh.finalPurchasePrice=buy; sh.finalShippingCost=ship; sh.finalPackageWeight=weight; sh.finalPurchaseBreakdown=vals.length?breakdown:null; sh.actualCostUpdatedAt=Date.now();
+  save(SK.resaleShipments,resaleShipments); closeShipmentDeliveryModal(); renderAll(); rerenderShipmentTab(); toast('Rzeczywiste koszty paczki zaktualizowane ✓');
+}
 
 function markShipmentOrdered(id) {
   const sh = resaleShipments.find(x => x.id === id);
@@ -14669,8 +14836,8 @@ function markShipmentOrdered(id) {
   const est = _calcShipmentDraftEstimate(sh.items || []);
   const existingBreakdown = sh.finalPurchaseBreakdown && typeof sh.finalPurchaseBreakdown === 'object'
     ? sh.finalPurchaseBreakdown : null;
-  const defaultTotal = Number.isFinite(Number(sh.finalPurchasePrice)) ? Number(sh.finalPurchasePrice) : est.totalBuy;
-  const defaultShip = Number.isFinite(Number(sh.finalShippingCost)) ? Number(sh.finalShippingCost) : est.totalShip;
+  const defaultTotal = sh.finalPurchasePrice != null && Number.isFinite(Number(sh.finalPurchasePrice)) ? Number(sh.finalPurchasePrice) : est.totalBuy;
+  const defaultShip = sh.finalShippingCost != null && Number.isFinite(Number(sh.finalShippingCost)) ? Number(sh.finalShippingCost) : est.totalShip;
 
   const breakdownRows = est.rows.map(r => `
     <div class="grid grid-cols-[1fr_92px] items-center gap-2">
@@ -14749,7 +14916,7 @@ function markShipmentOrdered(id) {
           </div>
           <div class="p-4">
             <div class="relative">
-              <input id="final-package-weight" type="text" inputmode="decimal" value="${Number.isFinite(Number(sh.finalPackageWeight)) ? Number(sh.finalPackageWeight) : ''}" placeholder="np. ${est.totalWeight.toFixed(2)}"
+              <input id="final-package-weight" type="text" inputmode="decimal" value="${sh.finalPackageWeight != null && Number.isFinite(Number(sh.finalPackageWeight)) ? Number(sh.finalPackageWeight) : ''}" placeholder="np. ${est.totalWeight.toFixed(2)}"
                 class="w-full rounded-xl border-2 border-violet-200 dark:border-violet-500/30 dark:bg-slate-800 px-4 py-3 pr-12 text-lg font-black focus:outline-none focus:ring-2 focus:ring-violet-300">
               <span class="absolute right-4 top-1/2 -translate-y-1/2 text-xs font-bold text-slate-400">kg</span>
             </div>
@@ -14924,7 +15091,7 @@ function openShipmentPreviewModal(id) {
             <p class="text-sm font-bold">${calc.totalWeight.toFixed(2)} kg</p>
           </div>
           <div class="bg-white dark:bg-slate-900 p-3 text-center">
-            <p class="text-[10px] text-slate-400 mb-0.5">Szac. koszt</p>
+            <p class="text-[10px] text-slate-400 mb-0.5">${calc.hasActual ? 'Rzecz. koszt' : 'Szac. koszt'}</p>
             <p class="text-sm font-bold">${fmt(calc.totalCost)}</p>
           </div>
           <div class="bg-white dark:bg-slate-900 ${calc.hasSell ? (calc.totalProfit >= 0 ? '' : '') : ''}">${profitSummary}</div>
@@ -15023,6 +15190,19 @@ function _renderShipmentDeliveryCorrectionModal(id, deliveredAtDefault) {
                  class="w-full rounded-xl border-2 border-teal-200 dark:border-teal-500/30 dark:bg-slate-800 px-4 py-3 text-sm font-bold focus:outline-none focus:ring-2 focus:ring-teal-300">
         </div>
 
+        <div class="rounded-2xl border border-amber-200 dark:border-amber-500/30 overflow-hidden">
+          <div class="px-4 py-3 bg-amber-50 dark:bg-amber-500/10">
+            <p class="text-sm font-semibold">Dokładne dane zakupu</p>
+            <p class="text-[10px] text-slate-400">Możesz potwierdzić lub poprawić rzeczywisty koszt zakupu, wysyłki i wagę przy dostarczeniu paczki.</p>
+          </div>
+          <div class="p-4 grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div><label class="block text-[10px] font-bold text-slate-400 mb-1">Zakup produktów łącznie</label><input id="delivery-final-buy-total" type="text" inputmode="decimal" value="${Number.isFinite(Number(sh.finalPurchasePrice)) ? Number(sh.finalPurchasePrice) : ''}" placeholder="np. 850,00" class="w-full rounded-xl border border-amber-200 dark:border-amber-500/30 dark:bg-slate-800 px-3 py-2.5 text-sm font-bold"></div>
+            <div><label class="block text-[10px] font-bold text-slate-400 mb-1">Wysyłka łącznie</label><input id="delivery-final-shipping-cost" type="text" inputmode="decimal" value="${Number.isFinite(Number(sh.finalShippingCost)) ? Number(sh.finalShippingCost) : ''}" placeholder="np. 72,00" class="w-full rounded-xl border border-blue-200 dark:border-blue-500/30 dark:bg-slate-800 px-3 py-2.5 text-sm font-bold"></div>
+            <div><label class="block text-[10px] font-bold text-slate-400 mb-1">Łączna waga paczki (opcjonalnie)</label><input id="delivery-final-package-weight" type="text" inputmode="decimal" value="${sh.finalPackageWeight != null && Number.isFinite(Number(sh.finalPackageWeight)) ? Number(sh.finalPackageWeight) : ''}" placeholder="kg" class="w-full rounded-xl border border-violet-200 dark:border-violet-500/30 dark:bg-slate-800 px-3 py-2.5 text-sm font-bold"></div>
+            <div class="sm:col-span-2 text-[10px] text-slate-400">Dane te będą używane do obliczania rzeczywistego kosztu produktów z tej paczki.</div>
+          </div>
+        </div>
+
         <div class="rounded-2xl bg-slate-50 dark:bg-slate-800/50 border border-slate-100 dark:border-slate-800 p-4">
           <div class="flex items-center justify-between gap-3">
             <div>
@@ -15071,16 +15251,24 @@ function confirmShipmentDelivered(id) {
   const input = document.getElementById('shipment-delivered-at-input');
   if (!sh || !input) return;
 
-  const deliveredAt = input.value ? new Date(input.value).getTime() : NaN;
-  if (!Number.isFinite(deliveredAt)) {
-    toast('Podaj prawidłową datę i godzinę dostarczenia.', 'error');
-    return;
-  }
+  const parseMoney = elId => {
+    const raw = (document.getElementById(elId)?.value || '').replace(',', '.').replace(/[^0-9.-]/g,'');
+    const n = parseFloat(raw);
+    return Number.isFinite(n) && n >= 0 ? +n.toFixed(3) : null;
+  };
 
-  if (Number(sh.orderedAt) && deliveredAt < Number(sh.orderedAt)) {
-    toast('Data dostarczenia nie może być wcześniejsza niż data zamówienia.', 'error');
-    return;
-  }
+  const deliveredAt = input.value ? new Date(input.value).getTime() : NaN;
+  if (!Number.isFinite(deliveredAt)) { toast('Podaj prawidłową datę i godzinę dostarczenia.', 'error'); return; }
+  if (Number(sh.orderedAt) && deliveredAt < Number(sh.orderedAt)) { toast('Data dostarczenia nie może być wcześniejsza niż data zamówienia.', 'error'); return; }
+
+  // Dokładne dane kosztowe można wpisać również na etapie dostarczenia.
+  const buy = parseMoney('delivery-final-buy-total');
+  const ship = parseMoney('delivery-final-shipping-cost');
+  const weight = parseMoney('delivery-final-package-weight');
+  if (buy !== null) sh.finalPurchasePrice = +buy.toFixed(2);
+  if (ship !== null) sh.finalShippingCost = +ship.toFixed(2);
+  if (weight !== null) sh.finalPackageWeight = weight;
+  sh.actualCostUpdatedAt = Date.now();
 
   const durationMs = Number(sh.orderedAt) ? deliveredAt - Number(sh.orderedAt) : null;
   const totalMinutes = durationMs != null ? Math.floor(durationMs / 60000) : null;
@@ -15097,12 +15285,28 @@ function confirmShipmentDelivered(id) {
   sh.deliveryDurationText = durationMs != null ? _formatShipmentDuration(durationMs) : null;
   sh.deliveryDurationUpdatedAt = Date.now();
 
+  // Stan magazynowy zwiększamy tylko raz. Chroni to przed podwójnym dodaniem
+  // przy ponownym otwarciu lub zapisaniu danych dostawy.
+  if (!sh.stockAddedAt) {
+    const missing = [];
+    (sh.items || []).forEach(item => {
+      const qty = Math.max(0, parseInt(item.qty, 10) || 0);
+      if (!qty) return;
+      const product = resaleProducts.find(p => p.id === item.productId);
+      if (product) product.quantity = Math.max(0, parseInt(product.quantity, 10) || 0) + qty;
+      else missing.push(item.productId);
+    });
+    sh.stockAddedAt = Date.now();
+    save(SK.resaleProducts, resaleProducts);
+    if (missing.length) console.warn('Nie znaleziono produktów przy dodawaniu stanu z paczki:', missing);
+  }
+
   save(SK.resaleShipments, resaleShipments);
   closeShipmentDeliveryModal();
+  renderAll();
   rerenderShipmentTab();
-  toast(`Paczka dostarczona! Czas dostawy: ${durationMs != null ? _formatShipmentDuration(durationMs) : '—'} 🎉`);
+  toast(`Paczka dostarczona! Dodano stan produktów z paczki. Czas dostawy: ${durationMs != null ? _formatShipmentDuration(durationMs) : '—'} 🎉`);
 }
-
 function markShipmentDelivered(id) {
   const sh = resaleShipments.find(x => x.id === id);
   if (!sh || !sh.ordered) return;
