@@ -11241,7 +11241,7 @@ function renderResaleDetail(s) {
     if (tf) tf.addEventListener('submit', ev => submitResaleTask(ev, s.id));
     // Wire product change to update margin calc
     const rsProd = document.getElementById('rs-product');
-    if (rsProd) rsProd.addEventListener('change', () => { toggleResaleCustomProduct(); updateResaleMarginCalc(); });
+    if (rsProd) rsProd.addEventListener('change', () => { toggleResaleCustomProduct(); updateResaleShipmentForSale(); });
     // Wire platform buttons to update margin calc
     document.querySelectorAll('.rs-platform-btn').forEach(btn => {
       btn.addEventListener('click', () => setTimeout(updateResaleMarginCalc, 50));
@@ -12054,6 +12054,11 @@ function renderResaleProducts(s) {
                 class="w-full rounded-xl border border-slate-200 dark:border-slate-700 dark:bg-slate-800 px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-amber-300"
                 oninput="updateRepShippingPreview()">
             </div>
+            <div class="sm:w-32">
+              <label class="text-xs font-medium text-slate-400 mb-1 block">Ilość sztuk</label>
+              <input type="number" min="0" step="1" id="rep-quantity" value="${p.quantity||0}"
+                class="w-full rounded-xl border border-slate-200 dark:border-slate-700 dark:bg-slate-800 px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-amber-300">
+            </div>
             <div class="sm:w-40">
               <label class="text-xs font-medium text-slate-400 mb-1 block">Szac. koszt dostawy</label>
               <div id="rep-ship-preview" class="w-full rounded-xl border border-slate-100 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 px-3 py-2.5 text-sm font-semibold text-blue-600 dark:text-blue-400">
@@ -12133,7 +12138,11 @@ function renderResaleProducts(s) {
 
     const expandedContent = expanded ? `
       <!-- Cost grid -->
-      <div class="grid grid-cols-3 gap-px bg-slate-100 dark:bg-slate-800 border-t border-slate-100 dark:border-slate-800">
+      <div class="grid grid-cols-4 gap-px bg-slate-100 dark:bg-slate-800 border-t border-slate-100 dark:border-slate-800">
+        <div class="bg-white dark:bg-slate-900 p-3 text-center">
+          <p class="text-[10px] text-slate-400 mb-0.5">Posiadane sztuki</p>
+          <p class="text-sm font-bold text-indigo-600 dark:text-indigo-400">${p.quantity||0} szt.</p>
+        </div>
         <div class="bg-white dark:bg-slate-900 p-3 text-center">
           <p class="text-[10px] text-slate-400 mb-0.5">Zakup</p>
           <p class="text-sm font-bold text-rose-600 dark:text-rose-400">${p.buyPrice ? fmt(p.buyPrice) : '—'}</p>
@@ -12760,7 +12769,7 @@ function submitResaleProductEdit(e) {
   let season = [];
   try { season = JSON.parse(document.getElementById('rep-season').value || '[]'); } catch(_) { season = document.getElementById('rep-season').value ? [document.getElementById('rep-season').value] : []; }
   const idx = resaleProducts.findIndex(p=>p.id===id);
-  if (idx >= 0) resaleProducts[idx] = { ...resaleProducts[idx], name, buyPrice, sellPrice, weight, link, links, notes, imageUrl, season };
+  if (idx >= 0) resaleProducts[idx] = { ...resaleProducts[idx], name, buyPrice, sellPrice, weight, quantity, link, links, notes, imageUrl, season };
   save(SK.resaleProducts, resaleProducts);
   resaleProductEditId = null;
   const s = incomeSources.find(x=>x.id===selectedSourceId);
@@ -12967,6 +12976,15 @@ function renderResaleSales(s) {
           ${resaleProducts.length === 0 ? `<p class="text-xs text-amber-500 mt-1 flex items-center gap-1"><i data-lucide="info" class="w-3 h-3"></i>Brak produktów w bazie — możesz dodać produkt w zakładce Produkty lub wybrać „Inny produkt".</p>` : ''}
         </div>
 
+        <div>
+          <label class="text-xs font-medium text-slate-400 mb-1 block">Paczka pochodzenia</label>
+          <select id="rs-shipment" onchange="updateResaleMarginCalc()" disabled
+            class="w-full rounded-xl border border-slate-200 dark:border-slate-700 dark:bg-slate-800 px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-violet-300 disabled:opacity-60">
+            <option value="">— najpierw wybierz produkt —</option>
+          </select>
+          <div id="rs-shipment-cost-info" class="text-[10px] text-slate-400 mt-1">Wybierz paczkę, aby użyć rzeczywistego kosztu zakupu i proporcjonalnego kosztu wysyłki.</div>
+        </div>
+
         <!-- Pola dla "Inny produkt" -->
         <div id="rs-custom-fields" class="hidden space-y-3 bg-amber-50 dark:bg-amber-500/10 border border-amber-200 dark:border-amber-500/30 rounded-xl p-3">
           <p class="text-xs font-semibold text-amber-700 dark:text-amber-400 flex items-center gap-1.5">
@@ -13014,6 +13032,8 @@ function renderResaleSales(s) {
               class="w-full rounded-xl border border-slate-200 dark:border-slate-700 dark:bg-slate-800 px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-300">
           </div>
         </div>
+
+        <div id="rs-suggested-price" class="hidden rounded-xl bg-violet-50 dark:bg-violet-500/10 border border-violet-100 dark:border-violet-500/20 px-3 py-2 text-xs text-violet-700 dark:text-violet-300"></div>
 
         <!-- ── Kalkulator marży na żywo ── -->
         <div id="rs-margin-calc" class="hidden rounded-2xl border-2 border-indigo-100 dark:border-indigo-500/20 bg-indigo-50/60 dark:bg-indigo-500/5 p-3 space-y-2">
@@ -13112,7 +13132,16 @@ function submitResaleSale(e) {
     productId = newProduct.id;
   }
 
-  resaleSales.push({ id: uid(), productId: productId || null, price, date, status: 'listed', platform: document.getElementById('rs-platform')?.value || '', createdAt: Date.now() });
+  const shipmentId = document.getElementById('rs-shipment')?.value || null;
+  const costSnapshot = productId ? getResaleSaleCost(productId, shipmentId) : null;
+  resaleSales.push({
+    id: uid(), productId: productId || null, shipmentId, price, date, status: 'listed',
+    platform: document.getElementById('rs-platform')?.value || '', createdAt: Date.now(),
+    actualBuyCost: costSnapshot?.buyCost ?? null,
+    actualShippingCost: costSnapshot?.shipCost ?? null,
+    actualTotalCost: costSnapshot?.totalCost ?? null,
+    suggestedPrice: costSnapshot?.suggestedPrice ?? null
+  });
   save(SK.resaleSales, resaleSales);
   const s = incomeSources.find(x => x.id === selectedSourceId);
   if (s) renderResaleDetail(s);
@@ -13750,17 +13779,64 @@ const PLATFORM_FEES = {
   inne:     { type:'pct',            pct:0.00, fixed:0,    label:'—' },
 };
 
+function getResaleProductShipmentOptions(productId) {
+  const shipments = resaleShipments.filter(sh => (sh.items || []).some(i => i.productId === productId));
+  return shipments.map(sh => {
+    const calc = _calcShipmentDraft(sh.items || [], sh);
+    const row = calc.rows.find(r => r.p.id === productId);
+    return row ? { shipment: sh, row } : null;
+  }).filter(Boolean);
+}
+
+function getResaleSaleCost(productId, shipmentId=null) {
+  const prod = resaleProducts.find(p => p.id === productId);
+  if (!prod) return { buyCost:0, shipCost:0, totalCost:0, suggestedPrice:0, shipment:null };
+  if (shipmentId) {
+    const sh = resaleShipments.find(x => x.id === shipmentId);
+    if (sh) {
+      const calc = _calcShipmentDraft(sh.items || [], sh);
+      const row = calc.rows.find(r => r.p.id === productId);
+      if (row) {
+        const totalCost = row.buyOne + row.shipOne;
+        return { buyCost:row.buyOne, shipCost:row.shipOne, totalCost, suggestedPrice:Math.ceil((totalCost * 1.30) * 100) / 100, shipment:sh };
+      }
+    }
+  }
+  const buyCost = Number(prod.buyPrice)||0;
+  const shipCost = (Number(prod.weight)||0) * RESALE_SHIP_PER_KG;
+  const totalCost = buyCost + shipCost;
+  return { buyCost, shipCost, totalCost, suggestedPrice:Math.ceil((totalCost * 1.30) * 100) / 100, shipment:null };
+}
+
+function updateResaleShipmentForSale() {
+  const productId = document.getElementById('rs-product')?.value || '';
+  const sel = document.getElementById('rs-shipment');
+  const hint = document.getElementById('rs-shipment-cost-info');
+  if (!sel || !hint) return;
+  const opts = productId && productId !== '__custom__' ? getResaleProductShipmentOptions(productId) : [];
+  sel.innerHTML = '<option value="">— bez przypisanej paczki —</option>' + opts.map(({shipment,row}) =>
+    `<option value="${shipment.id}">${escH(shipment.name || 'Paczka')} · koszt ${fmt(row.buyOne + row.shipOne)}/szt.</option>`).join('');
+  sel.disabled = !opts.length;
+  updateResaleMarginCalc();
+}
+
 function updateResaleMarginCalc() {
   const calc = document.getElementById('rs-margin-calc');
   if (!calc) return;
   const sellPrice = parseFloat(document.getElementById('rs-price')?.value) || 0;
   const platformVal = document.getElementById('rs-platform')?.value || '';
   const productId = document.getElementById('rs-product')?.value || '';
+  const shipmentId = document.getElementById('rs-shipment')?.value || '';
   const prod = productId && productId !== '__custom__' ? resaleProducts.find(p => p.id === productId) : null;
 
-  // Get buy price and weight
-  let buyPrice = 0, weight = 0;
-  if (prod) { buyPrice = prod.buyPrice || 0; weight = prod.weight || 0; }
+  // Get buy price and shipping cost. If a shipment is selected, use its actual allocated costs.
+  let buyPrice = 0, weight = 0, exactShipCost = null;
+  if (prod) {
+    const cost = getResaleSaleCost(productId, shipmentId);
+    buyPrice = cost.buyCost || 0;
+    exactShipCost = shipmentId ? (cost.shipCost || 0) : null;
+    weight = prod.weight || 0;
+  }
   else {
     buyPrice = parseFloat(document.getElementById('rs-custom-buy-price')?.value) || 0;
     weight   = parseFloat(document.getElementById('rs-custom-weight')?.value)    || 0;
@@ -13773,7 +13849,7 @@ function updateResaleMarginCalc() {
   const feeAmt = fee.type === 'pct_plus_fixed'
     ? sellPrice * fee.pct + fee.fixed
     : sellPrice * fee.pct;
-  const shipCost = weight > 0 ? weight * RESALE_SHIP_PER_KG : 0;
+  const shipCost = exactShipCost !== null ? exactShipCost : (weight > 0 ? weight * RESALE_SHIP_PER_KG : 0);
   const netProfit = sellPrice - feeAmt - buyPrice - shipCost;
   const totalCost = buyPrice + shipCost + feeAmt;
   const margin = sellPrice > 0 ? (netProfit / sellPrice) * 100 : 0;
@@ -13785,11 +13861,17 @@ function updateResaleMarginCalc() {
   document.getElementById('rmc-sell').textContent   = sellPrice > 0 ? fmt(sellPrice) : '—';
   document.getElementById('rmc-fee').textContent    = feeAmt > 0 ? `−${fmt(feeAmt)} (${fee.label})` : `0,00 zł (${fee.label})`;
   document.getElementById('rmc-buy').textContent    = buyPrice > 0 ? `−${fmt(buyPrice)}` : '—';
-  document.getElementById('rmc-ship').textContent   = shipCost > 0 ? `−${fmt(shipCost)} (${weight}kg)` : '—';
+  document.getElementById('rmc-ship').textContent   = shipCost > 0 ? `−${fmt(shipCost)} (${shipmentId ? 'udział paczki' : weight+'kg'})` : '—';
   const profEl = document.getElementById('rmc-profit');
   if (profEl) { profEl.textContent = fmt(Math.abs(netProfit)); profEl.className = `font-black text-right text-base ${profitColor}`; }
   document.getElementById('rmc-margin').textContent = `${margin.toFixed(1)}%`;
   document.getElementById('rmc-roi').textContent    = roi != null ? `${roi.toFixed(0)}%` : '—';
+  const sug = document.getElementById('rs-suggested-price');
+  if (sug && prod && shipmentId) {
+    const c = getResaleSaleCost(productId, shipmentId);
+    sug.textContent = `Rzeczywisty koszt z wybranej paczki: ${fmt(c.totalCost)} / szt. · sugerowana cena: ${fmt(c.suggestedPrice)} (narzut 30%)`;
+    sug.classList.remove('hidden');
+  } else if (sug) sug.classList.add('hidden');
   lucide.createIcons();
 }
 
@@ -13963,7 +14045,7 @@ function _calcShipmentDraft(items, shipment=null) {
   return {
     rows,
     totalBuy:actual.totalBuy,
-    totalWeight:est.totalWeight,
+    totalWeight:(shipment && Number.isFinite(Number(shipment.finalPackageWeight)) ? Number(shipment.finalPackageWeight) : est.totalWeight),
     totalShip:actual.totalShip,
     totalCost:actual.totalCost,
     totalUnits:est.totalUnits,
@@ -14660,6 +14742,20 @@ function markShipmentOrdered(id) {
           </div>
         </div>
 
+        <div class="rounded-2xl border border-slate-100 dark:border-slate-800 overflow-hidden">
+          <div class="px-4 py-3 bg-slate-50 dark:bg-slate-800/50">
+            <p class="text-sm font-semibold">Łączna rzeczywista waga paczki</p>
+            <p class="text-[10px] text-slate-400">Opcjonalna. Jeśli ją podasz, zostanie zapisana jako dokładna waga całej paczki.</p>
+          </div>
+          <div class="p-4">
+            <div class="relative">
+              <input id="final-package-weight" type="text" inputmode="decimal" value="${Number.isFinite(Number(sh.finalPackageWeight)) ? Number(sh.finalPackageWeight) : ''}" placeholder="np. ${est.totalWeight.toFixed(2)}"
+                class="w-full rounded-xl border-2 border-violet-200 dark:border-violet-500/30 dark:bg-slate-800 px-4 py-3 pr-12 text-lg font-black focus:outline-none focus:ring-2 focus:ring-violet-300">
+              <span class="absolute right-4 top-1/2 -translate-y-1/2 text-xs font-bold text-slate-400">kg</span>
+            </div>
+          </div>
+        </div>
+
         <div class="rounded-2xl bg-slate-50 dark:bg-slate-800/50 border border-slate-100 dark:border-slate-800 p-3 flex items-center justify-between">
           <div>
             <p class="text-[10px] uppercase tracking-wider font-bold text-slate-400">Szacowany czas dostawy</p>
@@ -14696,6 +14792,7 @@ function _submitShipmentOrdered(id) {
   };
   const finalPurchasePrice = parseMoney('final-buy-total');
   const finalShippingCost = parseMoney('final-shipping-cost');
+  const finalPackageWeight = parseMoney('final-package-weight');
   if (finalPurchasePrice === null) { toast('Podaj rzeczywistą cenę zakupu.', 'error'); return; }
   if (finalShippingCost === null) { toast('Podaj rzeczywisty koszt wysyłki.', 'error'); return; }
 
@@ -14718,6 +14815,7 @@ function _submitShipmentOrdered(id) {
   sh.deliveryDays = Math.max(1, parseInt(document.getElementById('delivery-days-input')?.value) || 30);
   sh.finalPurchasePrice = finalPurchasePrice;
   sh.finalShippingCost = finalShippingCost;
+  sh.finalPackageWeight = finalPackageWeight;
   sh.finalPurchaseBreakdown = hasBreakdown ? breakdown : null;
   sh.actualCostUpdatedAt = Date.now();
 
