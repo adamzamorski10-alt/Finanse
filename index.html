@@ -3970,6 +3970,7 @@ let resaleSales    = [];    // [{id, productId, price, date, status, soldAt, shi
 let resaleTasks      = [];      // [{id, title, type, dueDate, productId?, done, createdAt}]
 let resaleShipments  = [];  // [{id, name, items:[{productId,qty}], createdAt, ordered, orderedAt}]
 let resaleEvents     = [];  // [{id, at, type, entity:'product'|'sale'|'shipment'|'task', entityId, meta:{...}}] — Silnik zdarzeń (Faza 0.2)
+let resaleSalesSelected = new Set(); // Faza 4, pkt.8 — zaznaczone ID sprzedaży do akcji zbiorczych (bulk actions)
 
 // Faza 2, pkt.11 — panel "Ustawienia Resale": progi i stawki dawniej sztywne w kodzie,
 // teraz edytowalne i zapisywane w SK.resaleSettings. RESALE_DEFAULTS to fallback,
@@ -12136,7 +12137,7 @@ function renderResaleProducts(s) {
             <div class="sm:w-32">
               <label class="text-xs font-medium text-slate-400 mb-1 block">Cena zakupu (zł)</label>
               <input type="number" step="0.01" min="0" id="rep-buyPrice" value="${p.buyPrice||''}" placeholder="0,00"
-                oninput="updateRepRoiPreview()"
+                oninput="updateRepSuggestedSellPrice(); updateRepRoiPreview();"
                 class="w-full rounded-xl border border-slate-200 dark:border-slate-700 dark:bg-slate-800 px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-amber-300">
             </div>
             <div class="sm:w-32">
@@ -12144,6 +12145,24 @@ function renderResaleProducts(s) {
               <input type="number" step="0.01" min="0" id="rep-sellPrice" value="${p.sellPrice||''}" placeholder="0,00"
                 oninput="updateRepRoiPreview()"
                 class="w-full rounded-xl border border-slate-200 dark:border-slate-700 dark:bg-slate-800 px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-amber-300">
+            </div>
+          </div>
+          <!-- Faza 4, pkt.9 — Docelowa marża % auto-liczy cenę sprzedaży (uwzględnia opcjonalnie prowizję platformy) -->
+          <div class="flex flex-col sm:flex-row gap-2">
+            <div class="flex-1">
+              <label class="text-xs font-medium text-slate-400 mb-1 block">Docelowa marża % <span class="font-normal text-slate-300">(auto-liczy cenę sprzedaży)</span></label>
+              <input type="number" step="1" min="0" max="95" id="rep-target-margin" placeholder="np. 30"
+                oninput="updateRepSuggestedSellPrice()"
+                class="w-full rounded-xl border border-slate-200 dark:border-slate-700 dark:bg-slate-800 px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-violet-300">
+            </div>
+            <div class="flex-1">
+              <label class="text-xs font-medium text-slate-400 mb-1 block">Platforma <span class="font-normal text-slate-300">(prowizja w kalkulacji)</span></label>
+              <select id="rep-target-platform" onchange="updateRepSuggestedSellPrice()"
+                class="w-full rounded-xl border border-slate-200 dark:border-slate-700 dark:bg-slate-800 px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-violet-300">
+                <option value="">— bez prowizji —</option>
+                ${Object.entries(resaleSettings.platformCommissions||{}).map(([k,v])=>
+                  `<option value="${k}">${{vinted:'Vinted',allegro:'Allegro',olx:'OLX',ebay:'eBay',facebook:'Facebook',inne:'Inne'}[k]||k} (${v}%)</option>`).join('')}
+              </select>
             </div>
           </div>
           <!-- ROI preview for edit form -->
@@ -12426,7 +12445,7 @@ function renderResaleProducts(s) {
           <div class="sm:w-32">
             <label class="text-xs font-medium text-slate-400 mb-1 block">Cena zakupu (zł)</label>
             <input type="number" step="0.01" min="0" id="rp-buyPrice" placeholder="0,00"
-              oninput="updateRpRoiPreview()"
+              oninput="updateRpSuggestedSellPrice(); updateRpRoiPreview();"
               class="w-full rounded-xl border border-slate-200 dark:border-slate-700 dark:bg-slate-800 px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-amber-300">
           </div>
           <div class="sm:w-32">
@@ -12434,6 +12453,24 @@ function renderResaleProducts(s) {
             <input type="number" step="0.01" min="0" id="rp-sellPrice" placeholder="0,00"
               oninput="updateRpRoiPreview()"
               class="w-full rounded-xl border border-slate-200 dark:border-slate-700 dark:bg-slate-800 px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-amber-300">
+          </div>
+        </div>
+        <!-- Faza 4, pkt.9 — Docelowa marża % auto-liczy cenę sprzedaży (uwzględnia opcjonalnie prowizję platformy) -->
+        <div class="flex flex-col sm:flex-row gap-2">
+          <div class="flex-1">
+            <label class="text-xs font-medium text-slate-400 mb-1 block">Docelowa marża % <span class="font-normal text-slate-300">(auto-liczy cenę sprzedaży)</span></label>
+            <input type="number" step="1" min="0" max="95" id="rp-target-margin" placeholder="np. 30"
+              oninput="updateRpSuggestedSellPrice()"
+              class="w-full rounded-xl border border-slate-200 dark:border-slate-700 dark:bg-slate-800 px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-violet-300">
+          </div>
+          <div class="flex-1">
+            <label class="text-xs font-medium text-slate-400 mb-1 block">Platforma <span class="font-normal text-slate-300">(prowizja w kalkulacji)</span></label>
+            <select id="rp-target-platform" onchange="updateRpSuggestedSellPrice()"
+              class="w-full rounded-xl border border-slate-200 dark:border-slate-700 dark:bg-slate-800 px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-violet-300">
+              <option value="">— bez prowizji —</option>
+              ${Object.entries(resaleSettings.platformCommissions||{}).map(([k,v])=>
+                `<option value="${k}">${{vinted:'Vinted',allegro:'Allegro',olx:'OLX',ebay:'eBay',facebook:'Facebook',inne:'Inne'}[k]||k} (${v}%)</option>`).join('')}
+            </select>
           </div>
         </div>
         <!-- ROI preview for add form -->
@@ -13194,13 +13231,14 @@ function renderResaleSales(s) {
   const STATUSES = ['listed','to_ship','shipped'];
   // pkt.2 planu — 'overdue' to grupa WIRTUALNA (nie nowy rs.status), wyciągana
   // z 'to_ship'; dodana na początku listy statusów tylko do celów wyświetlania.
-  const STATUS_LABEL = { listed:'Wystawiony', to_ship:'Do wysyłki', shipped:'Wysłany', done:'Sprzedany', overdue:'Przeterminowane' };
+  const STATUS_LABEL = { listed:'Wystawiony', to_ship:'Do wysyłki', shipped:'Wysłany', done:'Sprzedany', overdue:'Przeterminowane', returned:'Zwroty' };
   const STATUS_COLOR = {
     listed:  'bg-indigo-100 dark:bg-indigo-500/20 text-indigo-700 dark:text-indigo-400',
     to_ship: 'bg-amber-100 dark:bg-amber-500/20 text-amber-700 dark:text-amber-400',
     shipped: 'bg-emerald-100 dark:bg-emerald-500/20 text-emerald-700 dark:text-emerald-400',
     done:    'bg-purple-100 dark:bg-purple-500/20 text-purple-700 dark:text-purple-400',
     overdue: 'bg-rose-100 dark:bg-rose-500/20 text-rose-700 dark:text-rose-400',
+    returned:'bg-orange-100 dark:bg-orange-500/20 text-orange-700 dark:text-orange-400', // Faza 4, pkt.10
   };
 
   const now = Date.now();
@@ -13270,8 +13308,26 @@ function renderResaleSales(s) {
       </button>`;
     }
 
+    // Faza 4, pkt.8 — checkbox do akcji zbiorczych, tylko dla statusów, które mają
+    // sensowną akcję grupową (to_ship → Wysłane, shipped → Zakończ).
+    const bulkSelectable = st === 'to_ship' || st === 'shipped';
+    const bulkCheckbox = bulkSelectable
+      ? `<input type="checkbox" class="resale-sale-bulk-checkbox shrink-0 w-4 h-4 rounded border-slate-300 dark:border-slate-600 text-indigo-500 focus:ring-indigo-400 focus:ring-offset-0 cursor-pointer"
+          data-sale-id="${rs.id}" ${resaleSalesSelected.has(rs.id)?'checked':''} onchange="toggleResaleSaleSelect('${rs.id}', this.checked)">`
+      : `<span class="w-4 shrink-0"></span>`;
+
+    // Faza 4, pkt.10 — przycisk "Zwrot/Reklamacja", drugorzędny wizualnie, dostępny
+    // dla pozycji już sprzedanych (to_ship/shipped), nie dla samego wystawienia (listed).
+    const returnBtn = st !== 'listed'
+      ? `<button onclick="openReturnModal('${rs.id}')" title="Zwrot / reklamacja"
+          class="text-slate-300 hover:text-orange-500 transition p-1.5 rounded-lg hover:bg-orange-50 dark:hover:bg-orange-500/10">
+          <i data-lucide="undo-2" class="w-3.5 h-3.5"></i>
+        </button>`
+      : '';
+
     return `
     <div class="flex items-center gap-3 py-3 px-3 rounded-xl hover:bg-slate-50 dark:hover:bg-slate-800/60 transition">
+      ${bulkCheckbox}
       <div class="w-9 h-9 rounded-xl flex items-center justify-center shrink-0
         ${st==='listed' ? 'bg-indigo-50 dark:bg-indigo-500/10' : st==='to_ship' ? 'bg-amber-50 dark:bg-amber-500/10' : 'bg-emerald-50 dark:bg-emerald-500/10'}">
         <i data-lucide="${st==='listed' ? 'tag' : st==='to_ship' ? 'truck' : 'package-check'}"
@@ -13291,6 +13347,7 @@ function renderResaleSales(s) {
       </div>
       <div class="flex items-center gap-1.5 shrink-0">
         ${actionBtn}
+        ${returnBtn}
         <button onclick="deleteResaleSale('${rs.id}')"
           class="text-slate-300 hover:text-rose-500 transition p-1.5 rounded-lg hover:bg-rose-50 dark:hover:bg-rose-500/10">
           <i data-lucide="trash-2" class="w-3.5 h-3.5"></i>
@@ -13357,6 +13414,10 @@ function renderResaleSales(s) {
           <span class="inline-flex items-center gap-1 text-[10px] font-semibold px-1.5 py-0.5 rounded-md bg-purple-50 dark:bg-purple-500/10 text-purple-600 dark:text-purple-400">Sprzedany</span>
         </div>
       </div>
+      <button onclick="openReturnModal('${rs.id}')" title="Zwrot / reklamacja"
+        class="text-slate-300 hover:text-orange-500 transition p-1.5 rounded-lg hover:bg-orange-50 dark:hover:bg-orange-500/10">
+        <i data-lucide="undo-2" class="w-3.5 h-3.5"></i>
+      </button>
       <button onclick="deleteResaleSale('${rs.id}')"
         class="text-slate-300 hover:text-rose-500 transition p-1.5 rounded-lg hover:bg-rose-50 dark:hover:bg-rose-500/10">
         <i data-lucide="trash-2" class="w-3.5 h-3.5"></i>
@@ -13374,12 +13435,79 @@ function renderResaleSales(s) {
     <div class="divide-y divide-slate-50 dark:divide-slate-800 px-2">${doneRows}</div>
   </div>` : '';
 
+  // Faza 4, pkt.10 — osobna grupa "Zwroty", oddzielona od "Sprzedane" żeby nie
+  // zaburzać statystyk sukcesu (plan: "Nowa grupa 'Zwroty'... osobna od 'Sprzedany'").
+  const returnedSales = resaleSales.filter(rs => rs.status === 'returned')
+    .sort((a,b) => (b.returnedAt||0) - (a.returnedAt||0));
+  const returnedRows = returnedSales.map(rs => {
+    const prod = resaleProducts.find(p => p.id === rs.productId);
+    const prodName = prod ? escH(prod.name) : '<span class="text-slate-400 italic">Produkt usunięty</span>';
+    const refund = rs.returnRefundAmount ?? (rs.soldPrice ?? rs.price ?? 0);
+    return `<div class="flex items-center gap-3 py-3 px-3 rounded-xl hover:bg-slate-50 dark:hover:bg-slate-800/60 transition">
+      <div class="w-9 h-9 rounded-xl flex items-center justify-center shrink-0 bg-orange-50 dark:bg-orange-500/10">
+        <i data-lucide="undo-2" class="w-4 h-4 text-orange-500"></i>
+      </div>
+      <div class="flex-1 min-w-0">
+        <p class="text-sm font-semibold truncate">${prodName}</p>
+        <div class="flex items-center gap-2 flex-wrap mt-0.5">
+          <span class="text-xs text-slate-400">${fmtDate(rs.date)}</span>
+          <span class="text-xs font-bold text-rose-600 dark:text-rose-400">− ${fmt(refund)} zwrot</span>
+          ${rs.returnRestocked ? `<span class="inline-flex items-center gap-1 text-[10px] font-semibold px-1.5 py-0.5 rounded-md bg-blue-50 dark:bg-blue-500/10 text-blue-600 dark:text-blue-400"><i data-lucide="package" class="w-2.5 h-2.5"></i>Wrócił na stan</span>` : ''}
+          <span class="inline-flex items-center gap-1 text-[10px] font-semibold px-1.5 py-0.5 rounded-md bg-orange-50 dark:bg-orange-500/10 text-orange-600 dark:text-orange-400">Zwrot</span>
+        </div>
+      </div>
+      <button onclick="deleteResaleSale('${rs.id}')"
+        class="text-slate-300 hover:text-rose-500 transition p-1.5 rounded-lg hover:bg-rose-50 dark:hover:bg-rose-500/10">
+        <i data-lucide="trash-2" class="w-3.5 h-3.5"></i>
+      </button>
+    </div>`;
+  }).join('');
+  const returnedSection = returnedSales.length ? `
+  <div class="bg-white dark:bg-slate-900 rounded-2xl border border-orange-100 dark:border-orange-500/20 overflow-hidden">
+    <div class="flex items-center justify-between px-4 py-3 bg-slate-50 dark:bg-slate-800/50 border-b border-slate-100 dark:border-slate-800">
+      <div class="flex items-center gap-2">
+        <span class="text-xs font-bold px-2.5 py-1 rounded-full ${STATUS_COLOR.returned}">Zwroty</span>
+        <span class="text-xs text-slate-400 font-medium">${returnedSales.length} szt.</span>
+      </div>
+    </div>
+    <div class="divide-y divide-slate-50 dark:divide-slate-800 px-2">${returnedRows}</div>
+  </div>` : '';
+
   const productOptions = resaleProducts
     .map(p => `<option value="${p.id}">${escH(p.name)}${p.buyPrice ? ' — zakup '+fmt(p.buyPrice) : ''}</option>`)
     .join('');
 
   // pkt.3 — alert "martwy stan" na górze zakładki Sprzedaż
   const staleAlertHTML = getResaleStaleListingsAlertHTML();
+
+  // Faza 4, pkt.8 — pasek akcji zbiorczych, widoczny tylko gdy coś jest zaznaczone.
+  // Sprzątam zaznaczenia pozycji, których już nie ma na liście (np. usunięte gdzie indziej).
+  const _validSaleIds = new Set(resaleSales.map(rs => rs.id));
+  Array.from(resaleSalesSelected).forEach(id => { if (!_validSaleIds.has(id)) resaleSalesSelected.delete(id); });
+  const selectedToShip  = resaleSales.filter(rs => resaleSalesSelected.has(rs.id) && rs.status === 'to_ship').length;
+  const selectedShipped = resaleSales.filter(rs => resaleSalesSelected.has(rs.id) && rs.status === 'shipped').length;
+  const bulkActionsBarHTML = resaleSalesSelected.size > 0 ? `
+  <div class="sticky top-0 z-10 flex items-center justify-between gap-2 flex-wrap bg-indigo-500 text-white rounded-2xl px-4 py-3 shadow-sm">
+    <div class="flex items-center gap-2 text-sm font-semibold">
+      <i data-lucide="check-square" class="w-4 h-4"></i>
+      Zaznaczono: ${resaleSalesSelected.size} ${resaleSalesSelected.size===1?'pozycja':'pozycji'}
+      ${selectedToShip ? ` · ${selectedToShip} do wysyłki` : ''}${selectedShipped ? ` · ${selectedShipped} wysłanych` : ''}
+    </div>
+    <div class="flex items-center gap-2 flex-wrap">
+      ${selectedToShip ? `<button onclick="bulkMarkShipped()"
+        class="text-xs font-semibold px-3 py-1.5 rounded-lg bg-white/15 hover:bg-white/25 transition flex items-center gap-1.5">
+        <i data-lucide="truck" class="w-3.5 h-3.5"></i>Oznacz jako wysłane (${selectedToShip})
+      </button>` : ''}
+      ${selectedShipped ? `<button onclick="bulkFinishResaleSale()"
+        class="text-xs font-semibold px-3 py-1.5 rounded-lg bg-white/15 hover:bg-white/25 transition flex items-center gap-1.5">
+        <i data-lucide="flag" class="w-3.5 h-3.5"></i>Zakończ zaznaczone (${selectedShipped})
+      </button>` : ''}
+      <button onclick="clearResaleSalesSelection()"
+        class="text-xs font-semibold px-3 py-1.5 rounded-lg border border-white/30 hover:bg-white/10 transition">
+        Wyczyść
+      </button>
+    </div>
+  </div>` : '';
 
   return `
   <div class="p-4 space-y-4">
@@ -13502,6 +13630,8 @@ function renderResaleSales(s) {
       </form>
     </div>
 
+    ${bulkActionsBarHTML}
+
     <!-- Grouped sales -->
     ${groupedSales || `
     <div class="py-12 text-center flex flex-col items-center gap-3">
@@ -13514,6 +13644,9 @@ function renderResaleSales(s) {
 
     <!-- Done (finished) sales -->
     ${doneSalesSection}
+
+    <!-- Faza 4, pkt.10 — Returned sales -->
+    ${returnedSection}
   </div>`;
 }
 
@@ -13718,7 +13851,9 @@ function confirmMarkSold(saleId) {
   startResaleTimers();
 }
 
-function markResaleShipped(saleId) {
+// Faza 4, pkt.8 — `opts.silent` pozwala akcjom zbiorczym wywołać tę funkcję N razy
+// w pętli i zrobić jeden wspólny render/toast na końcu, zamiast N osobnych.
+function markResaleShipped(saleId, opts = {}) {
   const rs = resaleSales.find(x => x.id === saleId);
   if (!rs) return;
   const _oldStatus = rs.status;
@@ -13728,14 +13863,31 @@ function markResaleShipped(saleId) {
   rs.statusHistory.push({ status: 'shipped', at: rs.shippedAt }); // Faza 0.1
   save(SK.resaleSales, resaleSales);
   logResaleEvent('sale_status_changed', 'sale', saleId, { oldStatus: _oldStatus, newStatus: 'shipped' });
+  if (!opts.silent) {
+    stopResaleTimers();
+    renderAll();
+    const s = incomeSources.find(x => x.id === selectedSourceId);
+    if (s) renderResaleDetail(s);
+    toast('Wysłano! Status: Wysłany ✓');
+  }
+}
+
+// Faza 4, pkt.8 — masowe oznaczanie "Wysłany". Woła sprawdzoną markResaleShipped()
+// w pętli (nie duplikuje logiki), jeden wspólny render/toast na końcu.
+function bulkMarkShipped() {
+  const ids = resaleSales.filter(rs => resaleSalesSelected.has(rs.id) && rs.status === 'to_ship').map(rs => rs.id);
+  if (!ids.length) return;
+  ids.forEach(id => { markResaleShipped(id, { silent: true }); resaleSalesSelected.delete(id); });
   stopResaleTimers();
   renderAll();
   const s = incomeSources.find(x => x.id === selectedSourceId);
   if (s) renderResaleDetail(s);
-  toast('Wysłano! Status: Wysłany ✓');
+  toast(`Oznaczono jako wysłane: ${ids.length} ${ids.length===1?'pozycja':'pozycji'} ✓`);
 }
 
-function finishResaleSale(saleId) {
+// Faza 4, pkt.8 — `opts.silent` jak w markResaleShipped(): pozwala pętli bulk
+// wywołać tę funkcję wielokrotnie bez N-krotnego renderAll()/toast().
+function finishResaleSale(saleId, opts = {}) {
   const rs = resaleSales.find(x => x.id === saleId);
   if (!rs) return;
   const _oldStatus = rs.status;
@@ -13773,10 +13925,38 @@ function finishResaleSale(saleId) {
   });
   save(SK.transactions, transactions);
 
+  if (!opts.silent) {
+    renderAll();
+    const s = incomeSources.find(x => x.id === selectedSourceId);
+    if (s) renderResaleDetail(s);
+    toast(`Zakończono! ${fmt(soldPrice)} trafiło do Saldo Resale ✓`);
+  }
+  return soldPrice;
+}
+
+// Faza 4, pkt.8 — masowe "Zakończ". Pętla po sprawdzonej finishResaleSale(), jeden
+// wspólny render + zbiorczy toast z sumą kwot (zamiast N komunikatów).
+function bulkFinishResaleSale() {
+  const ids = resaleSales.filter(rs => resaleSalesSelected.has(rs.id) && rs.status === 'shipped').map(rs => rs.id);
+  if (!ids.length) return;
+  let sum = 0;
+  ids.forEach(id => { sum += finishResaleSale(id, { silent: true }) || 0; resaleSalesSelected.delete(id); });
   renderAll();
   const s = incomeSources.find(x => x.id === selectedSourceId);
   if (s) renderResaleDetail(s);
-  toast(`Zakończono! ${fmt(soldPrice)} trafiło do Saldo Resale ✓`);
+  toast(`Zakończono ${ids.length} ${ids.length===1?'sprzedaż':'sprzedaży'}, +${fmt(sum)} trafiło do Saldo Resale ✓`);
+}
+
+// Faza 4, pkt.8 — zaznaczanie/odznaczanie pojedynczej pozycji i czyszczenie zaznaczenia.
+function toggleResaleSaleSelect(saleId, checked) {
+  if (checked) resaleSalesSelected.add(saleId); else resaleSalesSelected.delete(saleId);
+  const s = incomeSources.find(x => x.id === selectedSourceId);
+  if (s) renderResaleDetail(s);
+}
+function clearResaleSalesSelection() {
+  resaleSalesSelected.clear();
+  const s = incomeSources.find(x => x.id === selectedSourceId);
+  if (s) renderResaleDetail(s);
 }
 
 function deleteResaleSale(saleId) {
@@ -13795,6 +13975,129 @@ function deleteResaleSale(saleId) {
   const s = incomeSources.find(x => x.id === selectedSourceId);
   if (s) renderResaleDetail(s);
   toast('Wystawienie usunięte');
+}
+
+/* ══════════════════════════════════
+   FAZA 4, pkt.10 — Zwrot / reklamacja
+   Dziś zwrot trzeba było "ręcznie oszukać" w systemie (brak statusu) — zaniżało
+   to realne statystyki zysku. Nowy status 'returned', dozwolone przejście z
+   każdego statusu poza 'listed' (zwrot następuje po sprzedaży).
+══════════════════════════════════ */
+function openReturnModal(saleId) {
+  const rs   = resaleSales.find(x => x.id === saleId);
+  const prod = rs ? resaleProducts.find(p => p.id === rs.productId) : null;
+  const wrap = document.getElementById('resale-sold-modal-wrap');
+  if (!wrap || !rs) return;
+  const defaultRefund = rs.soldPrice ?? rs.price ?? 0;
+
+  wrap.innerHTML = `
+  <div class="fixed inset-0 bg-black/40 dark:bg-black/60 z-50 flex items-end sm:items-center justify-center p-4" id="rrm-overlay" onclick="closeReturnModal(event)">
+    <div class="bg-white dark:bg-slate-900 rounded-2xl shadow-xl w-full max-w-sm border border-slate-200 dark:border-slate-700 overflow-hidden" onclick="event.stopPropagation()">
+      <div class="flex items-center justify-between p-4 border-b border-slate-100 dark:border-slate-800">
+        <div class="flex items-center gap-2">
+          <div class="w-8 h-8 rounded-xl bg-orange-50 dark:bg-orange-500/10 flex items-center justify-center">
+            <i data-lucide="undo-2" class="w-4 h-4 text-orange-500"></i>
+          </div>
+          <div>
+            <p class="font-bold text-sm">Zwrot / reklamacja</p>
+            ${prod ? `<p class="text-xs text-slate-400 truncate">${escH(prod.name)}</p>` : ''}
+          </div>
+        </div>
+        <button onclick="document.getElementById('resale-sold-modal-wrap').innerHTML=''" class="text-slate-400 hover:text-slate-600 p-1.5 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 transition">
+          <i data-lucide="x" class="w-4 h-4"></i>
+        </button>
+      </div>
+      <div class="p-4 space-y-3">
+        <div>
+          <label class="text-xs font-medium text-slate-400 mb-1 block">Kwota zwrotu (zł)</label>
+          <input type="number" step="0.01" min="0" id="rrm-refund" value="${defaultRefund}" placeholder="0,00"
+            class="w-full rounded-xl border border-slate-200 dark:border-slate-700 dark:bg-slate-800 px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-orange-300">
+          <p class="text-xs text-slate-400 mt-1">Sprzedano za: <strong>${fmt(defaultRefund)}</strong></p>
+        </div>
+        <div class="flex items-center gap-2">
+          <input type="checkbox" id="rrm-restockable" checked class="rounded accent-orange-500 w-4 h-4">
+          <label for="rrm-restockable" class="text-sm text-slate-600 dark:text-slate-300 cursor-pointer">Towar wraca na stan magazynowy</label>
+        </div>
+        <p class="text-xs text-slate-400">Jeśli sprzedaż miała już zaksięgowany przychód, dopiszę transakcję korygującą (wydatek) — oryginał zostaje w historii do wglądu.</p>
+      </div>
+      <div class="p-4 pt-0 flex gap-2">
+        <button onclick="document.getElementById('resale-sold-modal-wrap').innerHTML=''"
+          class="flex-1 px-4 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 text-sm font-semibold text-slate-500 hover:bg-slate-50 dark:hover:bg-slate-800 transition">
+          Anuluj
+        </button>
+        <button onclick="confirmMarkReturned('${saleId}')"
+          class="flex-1 px-4 py-2.5 rounded-xl bg-orange-500 text-white text-sm font-semibold hover:bg-orange-600 transition flex items-center justify-center gap-1.5">
+          <i data-lucide="undo-2" class="w-4 h-4"></i> Zatwierdź zwrot
+        </button>
+      </div>
+    </div>
+  </div>`;
+  lucide.createIcons();
+}
+
+function closeReturnModal(e) {
+  if (e.target.id === 'rrm-overlay') {
+    const w = document.getElementById('resale-sold-modal-wrap');
+    if (w) w.innerHTML = '';
+  }
+}
+
+function confirmMarkReturned(saleId) {
+  const refundAmount = Math.max(0, parseFloat(document.getElementById('rrm-refund')?.value) || 0);
+  const restockable  = document.getElementById('rrm-restockable')?.checked ?? true;
+  markResaleReturned(saleId, { refundAmount, restockable });
+  const w = document.getElementById('resale-sold-modal-wrap');
+  if (w) w.innerHTML = '';
+}
+
+function markResaleReturned(saleId, { refundAmount = 0, restockable = true } = {}) {
+  const rs = resaleSales.find(x => x.id === saleId);
+  if (!rs || rs.status === 'listed' || rs.status === 'returned') return;
+  const _oldStatus = rs.status;
+
+  rs.status              = 'returned';
+  rs.returnedAt           = Date.now();
+  rs.returnRefundAmount   = refundAmount;
+  rs.returnRestocked      = !!restockable;
+  if (!Array.isArray(rs.statusHistory)) rs.statusHistory = [];
+  rs.statusHistory.push({ status: 'returned', at: rs.returnedAt });
+  // Zapisujemy resaleSales najpierw — ta sama zasada co w confirmMarkSold/
+  // finishResaleSale, żeby globalny listener .on('value') nie nadpisał świeżo
+  // zmienionego statusu starą wersją zanim zdąży się zapisać.
+  save(SK.resaleSales, resaleSales);
+  logResaleEvent('sale_returned', 'sale', saleId, { oldStatus: _oldStatus, refundAmount, restockable });
+
+  // Jeśli sprzedaż miała już zaksięgowany przychód (confirmMarkSold z addHistory
+  // lub finishResaleSale z _resaleBalance) — dopisz transakcję korygującą (wydatek),
+  // NIE usuwaj oryginalnej, dla zachowania pełnej historii/audytu.
+  const hadIncomeTx = transactions.some(t => t._resaleSaleId === saleId && t.type === 'income');
+  if (hadIncomeTx && refundAmount > 0) {
+    const prod = resaleProducts.find(p => p.id === rs.productId);
+    const desc = prod ? `Zwrot: ${prod.name}` : 'Zwrot (resale)';
+    transactions.push({
+      id: uid(), amount: refundAmount, type: 'expense',
+      category: 'other', place: null,
+      desc, date: todayStr(), createdAt: Date.now(),
+      _sourceId: selectedSourceId,
+      _resaleSaleId: saleId,
+      _resaleReturn: true,
+    });
+    save(SK.transactions, transactions);
+  }
+
+  // Towar wraca na stan, jeśli nadaje się do ponownej sprzedaży.
+  if (restockable) {
+    const prod = resaleProducts.find(p => p.id === rs.productId);
+    if (prod) {
+      prod.quantity = Math.max(0, parseInt(prod.quantity, 10) || 0) + 1;
+      save(SK.resaleProducts, resaleProducts);
+    }
+  }
+
+  renderAll();
+  const s = incomeSources.find(x => x.id === selectedSourceId);
+  if (s) renderResaleDetail(s);
+  toast(`Zarejestrowano zwrot (−${fmt(refundAmount)})${restockable ? ' · towar wrócił na stan' : ''} ✓`);
 }
 
 /* ── Etykieta wysyłkowa ── */
@@ -14182,6 +14485,7 @@ function updateRpShippingPreview() {
   const w = parseFloat(document.getElementById('rp-weight')?.value) || 0;
   const el = document.getElementById('rp-ship-preview');
   if (el) el.textContent = w > 0 ? fmt(w * resaleSettings.shipPerKg) : '—';
+  updateRpSuggestedSellPrice();
   updateRpRoiPreview();
 }
 
@@ -14189,7 +14493,46 @@ function updateRepShippingPreview() {
   const w = parseFloat(document.getElementById('rep-weight')?.value) || 0;
   const el = document.getElementById('rep-ship-preview');
   if (el) el.textContent = w > 0 ? fmt(w * resaleSettings.shipPerKg) : '—';
+  updateRepSuggestedSellPrice();
   updateRepRoiPreview();
+}
+
+// Faza 4, pkt.9 — odwracam kierunek kalkulatora ROI: zamiast liczyć marżę z ręcznie
+// wpisanej sellPrice, liczę sellPrice z docelowej marży % (+ opcjonalnej prowizji
+// platformy). Pole sellPrice zostaje nadpisane, ale wciąż w pełni edytowalne ręcznie —
+// przeliczenie następuje tylko gdy zmieni się buyPrice/waga/marża/platforma.
+function _resaleSuggestSellPrice(buy, weight, marginPct, platform) {
+  if (!(buy > 0) || !(marginPct > 0)) return null;
+  const shipCost = weight * resaleSettings.shipPerKg;
+  const cost = buy + shipCost;
+  const commPct = (platform && resaleSettings.platformCommissions && resaleSettings.platformCommissions[platform]) || 0;
+  const denom = 1 - (marginPct / 100) - (commPct / 100);
+  if (denom <= 0) return null; // marża + prowizja >= 100% ceny — nierealne, nie sugeruj
+  return Math.round((cost / denom) * 100) / 100;
+}
+
+function updateRpSuggestedSellPrice() {
+  const buy      = parseFloat(document.getElementById('rp-buyPrice')?.value) || 0;
+  const weight   = parseFloat(document.getElementById('rp-weight')?.value) || 0;
+  const marginEl = document.getElementById('rp-target-margin');
+  const margin   = parseFloat(marginEl?.value) || 0;
+  const platform = document.getElementById('rp-target-platform')?.value || '';
+  if (!marginEl || !marginEl.value) return; // brak docelowej marży — nie ingerujemy w ręcznie wpisaną cenę
+  const suggested = _resaleSuggestSellPrice(buy, weight, margin, platform);
+  const sellEl = document.getElementById('rp-sellPrice');
+  if (sellEl && suggested != null) sellEl.value = suggested.toFixed(2);
+}
+
+function updateRepSuggestedSellPrice() {
+  const buy      = parseFloat(document.getElementById('rep-buyPrice')?.value) || 0;
+  const weight   = parseFloat(document.getElementById('rep-weight')?.value) || 0;
+  const marginEl = document.getElementById('rep-target-margin');
+  const margin   = parseFloat(marginEl?.value) || 0;
+  const platform = document.getElementById('rep-target-platform')?.value || '';
+  if (!marginEl || !marginEl.value) return;
+  const suggested = _resaleSuggestSellPrice(buy, weight, margin, platform);
+  const sellEl = document.getElementById('rep-sellPrice');
+  if (sellEl && suggested != null) sellEl.value = suggested.toFixed(2);
 }
 
 function updateRpRoiPreview() {
@@ -16248,6 +16591,14 @@ function renderResaleStats(s) {
   const listedSales  = allSales.filter(rs => rs.status === 'listed');
   const toShipSales  = allSales.filter(rs => rs.status === 'to_ship');
 
+  // Faza 4, pkt.10 — % zwrotów: realny sygnał jakości ofert/produktów. Mianownik to
+  // wszystkie sprzedaże, które wyszły poza etap "wystawiony" (bo dopiero od
+  // potwierdzenia sprzedaży zwrot jest w ogóle możliwy), licznik to te zwrócone.
+  const returnedSalesStat = allSales.filter(rs => rs.status === 'returned');
+  const confirmedSalesStat = allSales.filter(rs => ['to_ship','shipped','done','returned'].includes(rs.status));
+  const pctReturns = confirmedSalesStat.length ? (returnedSalesStat.length / confirmedSalesStat.length) * 100 : null;
+  const totalRefunded = returnedSalesStat.reduce((a,rs)=>a+(rs.returnRefundAmount||0),0);
+
   // Avg sell time (createdAt → soldAt, in days)
   const sellTimes   = allSales.filter(rs=>rs.soldAt && rs.createdAt).map(rs=>(rs.soldAt-rs.createdAt)/86400000);
   const avgSellTime = sellTimes.length ? sellTimes.reduce((a,v)=>a+v,0)/sellTimes.length : null;
@@ -16347,6 +16698,12 @@ function renderResaleStats(s) {
       ${kpi('Produkty w obiegu', (listedSales.length+toShipSales.length)+' szt.', listedSales.length+' wystawionych · '+toShipSales.length+' do wysyłki', 'bg-fuchsia-50 dark:bg-fuchsia-500/10 text-fuchsia-500', 'layers')}
     </div>
 
+    <!-- ②b Faza 4, pkt.10 — % zwrotów: realny sygnał jakości ofert/produktów -->
+    <div class="grid grid-cols-2 gap-3">
+      ${kpi('% zwrotów', pctReturns!=null?pctReturns.toFixed(1)+'%':'—', confirmedSalesStat.length?`${returnedSalesStat.length} z ${confirmedSalesStat.length} potwierdzonych sprzedaży`:'brak potwierdzonych sprzedaży', pctReturns>10?'bg-rose-50 dark:bg-rose-500/10 text-rose-500':'bg-orange-50 dark:bg-orange-500/10 text-orange-500', 'undo-2')}
+      ${kpi('Zwrócona kwota', returnedSalesStat.length?fmt(totalRefunded):'—', returnedSalesStat.length?returnedSalesStat.length+' '+(returnedSalesStat.length===1?'zwrot':'zwrotów'):'brak zwrotów', 'bg-orange-50 dark:bg-orange-500/10 text-orange-500', 'rotate-ccw')}
+    </div>
+
     <!-- ③ Wykres miesięczny: przychody/koszty/profit -->
     <div class="bg-white dark:bg-slate-900 rounded-2xl p-4 border border-slate-100 dark:border-slate-800">
       <p class="text-sm font-semibold mb-4 flex items-center gap-2">
@@ -16418,6 +16775,7 @@ function renderResaleStats(s) {
             ['Wystawione',   listedSales.length,  'bg-indigo-500', 'text-indigo-600 dark:text-indigo-400'],
             ['Do wysyłki',   toShipSales.length,  'bg-amber-500',  'text-amber-600 dark:text-amber-400'],
             ['Wysłane',      shippedSales.length, 'bg-emerald-500','text-emerald-600 dark:text-emerald-400'],
+            ['Zwroty',       returnedSalesStat.length, 'bg-orange-500','text-orange-600 dark:text-orange-400'],
           ].map(([label, count, bar, tc]) => {
             const total = allSales.length || 1;
             const pct = Math.round(count/total*100);
