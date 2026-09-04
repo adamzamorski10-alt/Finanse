@@ -3832,6 +3832,7 @@ const SK = {
   resaleSales:  'finapp_resale_sales',
   resaleTasks:  'finapp_resale_tasks',
   resaleShipments: 'finapp_resale_shipments',
+  resaleEvents: 'finapp_resale_events', // Silnik zdarzeń Resale (Faza 0.2 planu rozbudowy) — pełna historia zdarzeń, nie tylko finalne statusy
   gieldaOps:    'finapp_gielda_ops',
   stronyClients: 'finapp_strony_clients',
   dashboardLayouts: 'finapp_dashboard_layouts', // legacy — użyty tylko do jednorazowej migracji, patrz ensureDashboardLayouts()
@@ -3925,6 +3926,7 @@ let resaleProducts = []; // [{id, name, buyPrice, weight, link, notes}]
 let resaleSales    = [];    // [{id, productId, price, date, status, soldAt, shippedAt}]
 let resaleTasks      = [];      // [{id, title, type, dueDate, productId?, done, createdAt}]
 let resaleShipments  = [];  // [{id, name, items:[{productId,qty}], createdAt, ordered, orderedAt}]
+let resaleEvents     = [];  // [{id, at, type, entity:'product'|'sale'|'shipment'|'task', entityId, meta:{...}}] — Silnik zdarzeń (Faza 0.2)
 let gieldaOps        = [];        // [{id, type, name, amount, date, where?}]
 let stronyClients    = [];    // [{id, name, email?, phone?, industry?, address?, hasWebsite?, mediaLink?, googleMapsLink?, message?, status, estimatedPrice?, specs?, soldPrice?, soldPlace?, soldDate?, createdAt}]
 
@@ -4383,10 +4385,12 @@ function startOwnerListener(uidToWatch) {
     resaleSales    = load(SK.resaleSales, []);
     resaleTasks      = load(SK.resaleTasks, []);
     resaleShipments  = load(SK.resaleShipments, []);
+    resaleEvents     = load(SK.resaleEvents, []);
     gieldaOps        = load(SK.gieldaOps, []);
     stronyClients    = load(SK.stronyClients, []);
     dashboardLayouts = null; // wymuś ponowne złożenie z aktualnych danych Firebase (patrz ensureDashboardLayouts)
     ensureDashboardLayouts();
+    ensureResaleDataDefaults(); // Faza 0.1: dopisuje domyślne wartości nowych pól (listedAt, statusHistory, priceHistory, minStockAlert) do starych rekordów, bez zmiany istniejących danych
 
     if (dbData[SK_VINTED]) {
       _vintedPrices = dbData[SK_VINTED];
@@ -11229,6 +11233,7 @@ function renderResaleDetail(s) {
       if (!p) return;
       p.quantity = (p.quantity || 0) + qty;
       save(SK.resaleProducts, resaleProducts);
+      logResaleEvent('product_stock_added', 'product', p.id, { qty, newQuantity: p.quantity });
       const src = incomeSources.find(x => x.id === selectedSourceId);
       if (src) renderResaleDetail(src);
       toast(`Dodano ${qty} szt. do „${p.name}" ✓`);
@@ -11947,6 +11952,17 @@ function getResaleProductOrderedQty(productId) {
 function renderResaleProducts(s) {
   const editId  = resaleProductEditId;
   const query   = resaleProductSearch.toLowerCase().trim();
+
+  // Faza 0.2: alert niskiego stanu magazynowego, logowany do Silnika zdarzeń
+  // maksymalnie raz dziennie na produkt (żeby nie zaśmiecać historii przy
+  // każdym renderze listy). Pełny panel/UI alertu — patrz Faza 2, pkt. 11.
+  (resaleProducts || []).forEach(p => {
+    const threshold = p.minStockAlert != null ? p.minStockAlert : 2;
+    const qty = p.quantity || 0;
+    if (qty <= threshold && !_hasLoggedResaleEventToday('product_stock_low', p.id)) {
+      logResaleEvent('product_stock_low', 'product', p.id, { quantity: qty, threshold });
+    }
+  });
 
   // Compute per-product stats for sorting/filtering
   function getProdStats(p) {
@@ -12717,6 +12733,75 @@ function repAddLinkRow() {
   lucide.createIcons();
 }
 
+/* ══════════════════════════════════════════════════════════════════════
+   FAZA 0 — Fundament: rozszerzony model danych + Silnik zdarzeń
+   (plan_wdrozenia_resale.md, sekcja "FAZA 0")
+   ══════════════════════════════════════════════════════════════════════ */
+
+/* 0.1 — Kompatybilność wsteczna: dopisuje domyślne wartości nowych pól do
+   rekordów zapisanych PRZED wdrożeniem tej fazy. Wołane raz po każdym
+   załadowaniu danych z Firebase (patrz loadAll). Nie nadpisuje istniejących
+   wartości — tylko uzupełnia braki. Zmiany są tylko w pamięci; trafią do
+   Firebase przy najbliższym normalnym save() danego rekordu (np. edycja),
+   więc nie generujemy tu żadnego dodatkowego zapisu. */
+function ensureResaleDataDefaults() {
+  (resaleProducts || []).forEach(p => {
+    if (!Array.isArray(p.priceHistory)) {
+      // Backfill: jeśli produkt ma buyPrice, traktujemy go jako pierwszy wpis historii
+      p.priceHistory = (p.buyPrice != null)
+        ? [{ buyPrice: p.buyPrice, source: 'manual', at: p.createdAt || Date.now() }]
+        : [];
+    }
+    if (p.minStockAlert == null) p.minStockAlert = 2; // domyślny próg niskiego stanu (pkt. 11)
+  });
+
+  (resaleSales || []).forEach(rs => {
+    if (rs.listedAt == null) {
+      // Fallback wg planu: brak listedAt → użyj createdAt, a w ostateczności date
+      rs.listedAt = rs.createdAt || (rs.date ? new Date(rs.date).getTime() : Date.now());
+    }
+    if (!Array.isArray(rs.statusHistory)) {
+      // Odtwarzamy najlepszą możliwą historię z istniejących znaczników czasu
+      const hist = [{ status: 'listed', at: rs.listedAt }];
+      if (rs.soldAt)    hist.push({ status: 'to_ship', at: rs.soldAt });
+      if (rs.shippedAt) hist.push({ status: 'shipped', at: rs.shippedAt });
+      if (rs.doneAt)    hist.push({ status: 'done',    at: rs.doneAt });
+      rs.statusHistory = hist;
+    }
+  });
+}
+
+/* 0.2 — Silnik zdarzeń: pojedyncze źródło prawdy o wszystkim, co dzieje się
+   w module Resale. Wołany z istniejących funkcji biznesowych, BEZ zmiany
+   ich logiki — tylko dopisuje wpis do resaleEvents.
+   Zgodnie z zasadą kolejności zapisów (patrz komentarze przy save() w
+   confirmMarkSold/finishResaleSale): logResaleEvent() jest zapisem
+   POBOCZNYM, więc wołaj go zawsze PO zapisaniu głównych, bezpośrednio
+   zmienionych danych (resaleSales/resaleProducts/resaleShipments/resaleTasks). */
+const RESALE_EVENTS_MAX = 5000; // przycinanie węzła Firebase — patrz plan, sekcja "Wydajność/limity"
+function logResaleEvent(type, entity, entityId, meta = {}) {
+  try {
+    resaleEvents.push({ id: uid(), at: Date.now(), type, entity, entityId, meta });
+    if (resaleEvents.length > RESALE_EVENTS_MAX) {
+      resaleEvents = resaleEvents.slice(resaleEvents.length - RESALE_EVENTS_MAX);
+    }
+    save(SK.resaleEvents, resaleEvents);
+  } catch (e) {
+    // Silnik zdarzeń jest pomocniczy (analityka/powiadomienia) — jego ewentualny
+    // błąd nigdy nie może przerwać głównej akcji użytkownika (np. dodania sprzedaży).
+    console.warn('logResaleEvent nie powiódł się:', e);
+  }
+}
+
+/* Pomocnicza deduplikacja dla product_stock_low — plan wymaga logowania
+   maksymalnie 1x/dzień na produkt, żeby nie zaśmiecać historii zdarzeń
+   przy każdym renderze listy produktów. */
+function _hasLoggedResaleEventToday(type, entityId) {
+  const d = new Date(); d.setHours(0, 0, 0, 0);
+  const startOfDay = d.getTime();
+  return resaleEvents.some(ev => ev.type === type && ev.entityId === entityId && ev.at >= startOfDay);
+}
+
 function submitResaleProduct(e) {
   e.preventDefault();
   const name     = document.getElementById('rp-name').value.trim();
@@ -12730,8 +12815,14 @@ function submitResaleProduct(e) {
   let season = [];
   try { season = JSON.parse(document.getElementById('rp-season').value || '[]'); } catch(_) { season = []; }
   if (!name) return;
-  resaleProducts.push({ id:uid(), name, buyPrice, sellPrice, weight, link, links, notes, imageUrl, season, createdAt: Date.now() });
+  const newProductId = uid();
+  resaleProducts.push({
+    id: newProductId, name, buyPrice, sellPrice, weight, link, links, notes, imageUrl, season, createdAt: Date.now(),
+    priceHistory: (buyPrice != null) ? [{ buyPrice, source: 'manual', at: Date.now() }] : [], // Faza 0.1
+    minStockAlert: 2, // Faza 0.1 — domyślny próg, edytowalny w Fazie 2 (pkt. 11)
+  });
   save(SK.resaleProducts, resaleProducts);
+  logResaleEvent('product_created', 'product', newProductId, { buyPrice, sellPrice, season });
   const s = incomeSources.find(x=>x.id===selectedSourceId);
   if (s) renderResaleDetail(s);
   toast('Produkt dodany ✓');
@@ -12782,8 +12873,24 @@ function submitResaleProductEdit(e) {
   let season = [];
   try { season = JSON.parse(document.getElementById('rep-season').value || '[]'); } catch(_) { season = document.getElementById('rep-season').value ? [document.getElementById('rep-season').value] : []; }
   const idx = resaleProducts.findIndex(p=>p.id===id);
-  if (idx >= 0) resaleProducts[idx] = { ...resaleProducts[idx], name, buyPrice, sellPrice, weight, quantity, link, links, notes, imageUrl, season };
+  let _oldBuyPrice = null, _oldSellPrice = null, _priceChanged = false;
+  if (idx >= 0) {
+    _oldBuyPrice  = resaleProducts[idx].buyPrice;
+    _oldSellPrice = resaleProducts[idx].sellPrice;
+    _priceChanged = (_oldBuyPrice !== buyPrice) || (_oldSellPrice !== sellPrice);
+    const priceHistory = Array.isArray(resaleProducts[idx].priceHistory) ? resaleProducts[idx].priceHistory : [];
+    if (_oldBuyPrice !== buyPrice) {
+      priceHistory.push({ buyPrice, source: 'manual', at: Date.now() }); // Faza 0.1 / pkt. 12
+    }
+    resaleProducts[idx] = { ...resaleProducts[idx], name, buyPrice, sellPrice, weight, quantity, link, links, notes, imageUrl, season, priceHistory };
+  }
   save(SK.resaleProducts, resaleProducts);
+  if (_priceChanged) {
+    logResaleEvent('product_price_changed', 'product', id, {
+      oldBuyPrice: _oldBuyPrice, newBuyPrice: buyPrice,
+      oldSellPrice: _oldSellPrice, newSellPrice: sellPrice,
+    });
+  }
   resaleProductEditId = null;
   const s = incomeSources.find(x=>x.id===selectedSourceId);
   if (s) renderResaleDetail(s);
@@ -13148,15 +13255,21 @@ function submitResaleSale(e) {
 
   const shipmentId = document.getElementById('rs-shipment')?.value || null;
   const costSnapshot = productId ? getResaleSaleCost(productId, shipmentId) : null;
+  const _newSaleId = uid();
+  const _listedAt = Date.now();
+  const platform = document.getElementById('rs-platform')?.value || '';
   resaleSales.push({
-    id: uid(), productId: productId || null, shipmentId, price, date, status: 'listed',
-    platform: document.getElementById('rs-platform')?.value || '', createdAt: Date.now(),
+    id: _newSaleId, productId: productId || null, shipmentId, price, date, status: 'listed',
+    platform, createdAt: _listedAt,
+    listedAt: _listedAt, // Faza 0.1
+    statusHistory: [{ status: 'listed', at: _listedAt }], // Faza 0.1
     actualBuyCost: costSnapshot?.buyCost ?? null,
     actualShippingCost: costSnapshot?.shipCost ?? null,
     actualTotalCost: costSnapshot?.totalCost ?? null,
     suggestedPrice: costSnapshot?.suggestedPrice ?? null
   });
   save(SK.resaleSales, resaleSales);
+  logResaleEvent('sale_listed', 'sale', _newSaleId, { price, platform, productId: productId || null });
   const s = incomeSources.find(x => x.id === selectedSourceId);
   if (s) renderResaleDetail(s);
   toast('Wystawienie dodane ✓');
@@ -13251,9 +13364,12 @@ function confirmMarkSold(saleId) {
   const placeVal    = document.getElementById('rsm-place')?.value ?? 'konto';
   const soldPrice   = soldPriceEl ? parseFloat(soldPriceEl.value) || rs.price : rs.price;
 
+  const _oldStatus = rs.status;
   rs.status    = 'to_ship';
   rs.soldAt    = Date.now();
   rs.soldPrice = soldPrice;
+  if (!Array.isArray(rs.statusHistory)) rs.statusHistory = [];
+  rs.statusHistory.push({ status: 'to_ship', at: rs.soldAt }); // Faza 0.1
   // WAŻNE: zapisujemy resaleSales PRZED ensureResaleSaleInventoryDeducted().
   // Ta druga funkcja zapisuje osobny węzeł (resaleProducts), co wywołuje globalny
   // listener .on('value') na całej referencji użytkownika — a on odczytuje na nowo
@@ -13263,6 +13379,7 @@ function confirmMarkSold(saleId) {
   // ginęłaby mimo poprawnego zapisu produktów/salda. Zapisując resaleSales najpierw,
   // gwarantujemy że listener zawsze zobaczy już zaktualizowany status.
   save(SK.resaleSales, resaleSales);
+  logResaleEvent('sale_status_changed', 'sale', saleId, { oldStatus: _oldStatus, newStatus: 'to_ship', price: soldPrice });
   // Sprzedaż jest potwierdzona — od tej chwili sztuka nie jest już dostępna na stanie.
   ensureResaleSaleInventoryDeducted(rs);
 
@@ -13297,9 +13414,13 @@ function confirmMarkSold(saleId) {
 function markResaleShipped(saleId) {
   const rs = resaleSales.find(x => x.id === saleId);
   if (!rs) return;
+  const _oldStatus = rs.status;
   rs.status     = 'shipped';
   rs.shippedAt  = Date.now();
+  if (!Array.isArray(rs.statusHistory)) rs.statusHistory = [];
+  rs.statusHistory.push({ status: 'shipped', at: rs.shippedAt }); // Faza 0.1
   save(SK.resaleSales, resaleSales);
+  logResaleEvent('sale_status_changed', 'sale', saleId, { oldStatus: _oldStatus, newStatus: 'shipped' });
   stopResaleTimers();
   renderAll();
   const s = incomeSources.find(x => x.id === selectedSourceId);
@@ -13310,8 +13431,11 @@ function markResaleShipped(saleId) {
 function finishResaleSale(saleId) {
   const rs = resaleSales.find(x => x.id === saleId);
   if (!rs) return;
+  const _oldStatus = rs.status;
   rs.status  = 'done';
   rs.doneAt  = Date.now();
+  if (!Array.isArray(rs.statusHistory)) rs.statusHistory = [];
+  rs.statusHistory.push({ status: 'done', at: rs.doneAt }); // Faza 0.1
   // WAŻNE: zapisujemy resaleSales PRZED ensureResaleSaleInventoryDeducted() i przed
   // dopisaniem transakcji do salda. ensureResaleSaleInventoryDeducted() zapisuje
   // osobny węzeł (resaleProducts), co wywołuje globalny listener .on('value') na
@@ -13323,6 +13447,7 @@ function finishResaleSale(saleId) {
   // najpierw, gwarantujemy że status 'done' jest już bezpiecznie zapisany zanim
   // jakikolwiek inny zapis (produkty, transakcje) wywoła ponowne przeładowanie.
   save(SK.resaleSales, resaleSales);
+  logResaleEvent('sale_status_changed', 'sale', saleId, { oldStatus: _oldStatus, newStatus: 'done', price: rs.soldPrice ?? rs.price });
   // Zabezpieczenie dla starszych rekordów, które zostały sprzedane przed dodaniem
   // flagi _inventoryDeducted. Dla nowych rekordów funkcja niczego drugi raz nie odejmie.
   ensureResaleSaleInventoryDeducted(rs);
@@ -13359,6 +13484,7 @@ function deleteResaleSale(saleId) {
   }
   resaleSales = resaleSales.filter(x => x.id !== saleId);
   save(SK.resaleSales, resaleSales);
+  logResaleEvent('sale_deleted', 'sale', saleId, { lastStatus: rs?.status ?? null });
   const s = incomeSources.find(x => x.id === selectedSourceId);
   if (s) renderResaleDetail(s);
   toast('Wystawienie usunięte');
@@ -14855,15 +14981,21 @@ function saveShipmentDraft() {
     }
   }
 
+  const _newShipmentId = uid();
+  const _newShipmentItems = draft.items.map(i => ({ productId: i.productId, qty: Math.max(1, parseInt(i.qty, 10) || 1), sellPrice: Number(i.sellPrice) || 0 }));
   resaleShipments.push({
-    id: uid(),
+    id: _newShipmentId,
     name: name || `Paczka ${new Date().toLocaleDateString('pl-PL')}`,
-    items: draft.items.map(i => ({ productId: i.productId, qty: Math.max(1, parseInt(i.qty, 10) || 1), sellPrice: Number(i.sellPrice) || 0 })),
+    items: _newShipmentItems,
     createdAt: Date.now(),
     ordered: false,
     orderedAt: null,
   });
   save(SK.resaleShipments, resaleShipments);
+  logResaleEvent('shipment_created', 'shipment', _newShipmentId, {
+    itemsCount: _newShipmentItems.length,
+    totalQty: _newShipmentItems.reduce((a, i) => a + i.qty, 0),
+  });
   _shipmentDraft = { items: [] };
   const s = incomeSources.find(x => x.id === selectedSourceId);
   if (s) renderResaleDetail(s);
@@ -15380,6 +15512,11 @@ function confirmShipmentDelivered(id) {
   }
 
   save(SK.resaleShipments, resaleShipments);
+  logResaleEvent('shipment_delivered', 'shipment', id, {
+    cost: sh.finalPurchasePrice ?? null,
+    shippingCost: sh.finalShippingCost ?? null,
+    itemsCount: (sh.items || []).length,
+  });
   closeShipmentDeliveryModal();
   renderAll();
   rerenderShipmentTab();
@@ -15749,6 +15886,7 @@ function toggleResaleTask(id) {
   if (!t) return;
   t.done = !t.done;
   save(SK.resaleTasks, resaleTasks);
+  if (t.done) logResaleEvent('task_completed', 'task', id, { type: t.type }); // logujemy tylko oznaczenie jako zrobione, nie odznaczenie
   const s = incomeSources.find(x=>x.id===selectedSourceId);
   if (s) renderResaleDetail(s);
   updateRemindersBadge();
