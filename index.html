@@ -3842,6 +3842,7 @@ const db = firebase.database();
 
 let dbData = {};
 let initialLoadDone = false;
+let _resaleShippingToastShown = false; // Faza 1, pkt.1 planu — toast o przeterminowanej wysyłce tylko raz na sesję
 
 /* ── Wielu użytkowników: ścieżka w bazie zależy od zalogowanego właściciela ──
    currentUserRef  = db.ref('users/<uid>') aktywnej sesji (właściciel LUB gość
@@ -4396,6 +4397,18 @@ function startOwnerListener(uidToWatch) {
       _vintedPrices = dbData[SK_VINTED];
     }
 
+    // Faza 1, pkt.1 — jednorazowy (na sesję) toast, jeśli w tle jest coś
+    // krytycznie przeterminowane (>48h na wysyłkę). Sprawdzane raz, przy
+    // pierwszym załadowaniu danych z Firebase — nie przy każdej zmianie
+    // danych, żeby nie spamować powiadomieniami.
+    if (!_resaleShippingToastShown) {
+      _resaleShippingToastShown = true;
+      const _overdueShipping = getResaleShippingDeadlineNotifs().filter(x => x.overdue);
+      if (_overdueShipping.length > 0) {
+        toast(`⚠️ Masz ${_overdueShipping.length} szt. przesyłek po terminie 48h na wysyłkę!`, 'error');
+      }
+    }
+
     if (!initialLoadDone) {
       initialLoadDone = true;
 
@@ -4533,7 +4546,9 @@ function updateRemindersBadge() {
   const today = todayStr();
   const soon = new Date(Date.now() + 3*86400000).toISOString().slice(0,10);
   const hasTaskNotifs = resaleTasks.some(t => !t.done && t.dueDate && t.dueDate <= soon);
-  const hasBadge = hasSeasonNotifs || hasTaskNotifs;
+  const hasShippingNotifs = getResaleShippingDeadlineNotifs().length > 0; // Faza 1, pkt.1
+  const hasStaleNotifs = getResaleStaleListingsNotifs().length > 0; // Faza 1, pkt.3
+  const hasBadge = hasSeasonNotifs || hasTaskNotifs || hasShippingNotifs || hasStaleNotifs;
   ['reminders-nav-badge','reminders-nav-badge-mobile'].forEach(id => {
     const el = document.getElementById(id);
     if (!el) return;
@@ -11938,7 +11953,7 @@ let resaleProductSearch   = '';  // current search query
 let resaleProductSort     = 'name';   // 'name'|'quantity'|'profit'|'sold'|'listed'|'buyPrice'|'newest'
 let resaleProductSortDir  = 'asc';    // 'asc'|'desc'
 let resaleProductSeasonFilter = 'all'; // 'all'|'wiosna'|'lato'|'jesien'|'zima'
-let resaleProductStatusFilter = 'all'; // 'all'|'has_stock'|'listed'|'to_ship'|'shipped'|'no_stock'
+let resaleProductStatusFilter = 'all'; // 'all'|'has_stock'|'listed'|'to_ship'|'shipped'|'no_stock'|'sold'|'overdue'
 
 // Sztuki aktualnie zamówione: paczka ma status Zamówiona, ale nie została jeszcze dostarczona.
 function getResaleProductOrderedQty(productId) {
@@ -11972,10 +11987,11 @@ function renderResaleProducts(s) {
     const cntListed  = allSales.filter(rs => rs.status==='listed').length;
     const cntToShip  = allSales.filter(rs => rs.status==='to_ship').length;
     const cntShipped = allSales.filter(rs => rs.status==='shipped').length;
+    const cntOverdue = allSales.filter(rs => isResaleSaleOverdue(rs)).length; // Faza 1, pkt.2
     const soldSales  = allSales.filter(rs => rs.status==='done');
     const avgSoldPrice = soldSales.length ? soldSales.reduce((a,rs)=>a+(rs.soldPrice??rs.price),0)/soldSales.length : null;
     const avgProfit    = avgSoldPrice != null ? avgSoldPrice - totalCost : null;
-    return { totalCost, cntListed, cntToShip, cntShipped, soldCount: soldSales.length, avgProfit };
+    return { totalCost, cntListed, cntToShip, cntShipped, cntOverdue, soldCount: soldSales.length, avgProfit };
   }
 
   // Filter by search query
@@ -11993,6 +12009,7 @@ function renderResaleProducts(s) {
       if (resaleProductStatusFilter === 'to_ship')    return st.cntToShip > 0;
       if (resaleProductStatusFilter === 'shipped')    return st.cntShipped > 0;
       if (resaleProductStatusFilter === 'sold')       return st.soldCount > 0;
+      if (resaleProductStatusFilter === 'overdue')    return st.cntOverdue > 0; // Faza 1, pkt.2
       return true;
     });
   }
@@ -12439,14 +12456,18 @@ function renderResaleProducts(s) {
           { val:'no_stock', label:'Brak stanu',   icon:'package-x' },
           { val:'listed',   label:'Wystawione',   icon:'tag' },
           { val:'to_ship',  label:'Do wysyłki',   icon:'truck' },
+          { val:'overdue',  label:'Przeterminowane', icon:'alert-triangle' },
           { val:'shipped',  label:'Wysłane',      icon:'package-check' },
           { val:'sold',     label:'Sprzedane',    icon:'check-circle' },
         ].map(f => {
           const isAct = resaleProductStatusFilter === f.val;
+          const activeColor = f.val === 'overdue'
+            ? 'bg-rose-500 border-rose-500 text-white shadow-sm'
+            : 'bg-amber-500 border-amber-500 text-white shadow-sm';
           return `<button onclick="setResaleProductStatusFilter('${f.val}')"
             class="inline-flex items-center gap-1 text-[11px] font-semibold px-2.5 py-1 rounded-lg border transition
               ${isAct
-                ? 'bg-amber-500 border-amber-500 text-white shadow-sm'
+                ? activeColor
                 : 'bg-white dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-500 hover:border-amber-300 hover:text-amber-600'}">
             <i data-lucide="${f.icon}" class="w-3 h-3"></i>${f.label}
           </button>`;
@@ -12802,6 +12823,110 @@ function _hasLoggedResaleEventToday(type, entityId) {
   return resaleEvents.some(ev => ev.type === type && ev.entityId === entityId && ev.at >= startOfDay);
 }
 
+/* ══════════════════════════════════
+   FAZA 1 — Automatyzacja i powiadomienia
+   (pkt. 1: limit 48h na wysyłkę, pkt. 2: auto-status "przeterminowane",
+   pkt. 3: "martwy stan" — produkty wystawione bez sprzedaży)
+══════════════════════════════════ */
+
+// Próg (w dniach) dla alertu "martwy stan" (pkt. 3). Domyślnie 30 dni —
+// w Fazie 2 (pkt. 11, panel "Ustawienia Resale") stanie się edytowalny
+// i zapisywany w SK.resaleSettings; na razie zmienna globalna z rozsądnym
+// defaultem, żeby reszta kodu (poniżej) mogła już z niej korzystać.
+let RESALE_STALE_THRESHOLD_DAYS = 30;
+
+// pkt. 2 — "przeterminowane" jest właściwością POCHODNĄ, nie nowym statusem
+// (żeby nie rozwałkować filtrów po rs.status w reszcie appki).
+function isResaleSaleOverdue(rs) {
+  return rs.status === 'to_ship' && !!rs.soldAt && (Date.now() - rs.soldAt) > 48 * 3600 * 1000;
+}
+
+// pkt. 1 — zwraca sprzedaże "do wysyłki", które są w oknie ostrzegawczym
+// (< 6h do przekroczenia 48h) lub już przeterminowane, posortowane wg pilności.
+function getResaleShippingDeadlineNotifs() {
+  const WARN_WINDOW = 6 * 3600 * 1000;
+  const now = Date.now();
+  return resaleSales
+    .filter(rs => rs.status === 'to_ship' && rs.soldAt)
+    .map(rs => {
+      const deadline  = rs.soldAt + 48 * 3600 * 1000;
+      const remaining = deadline - now;
+      return { rs, deadline, remaining, overdue: remaining <= 0 };
+    })
+    .filter(x => x.overdue || x.remaining <= WARN_WINDOW)
+    .sort((a, b) => a.deadline - b.deadline);
+}
+
+// pkt. 3 — produkty wystawione (status 'listed') dłużej niż próg bez sprzedaży.
+function getResaleStaleListingsNotifs() {
+  const thresholdMs = RESALE_STALE_THRESHOLD_DAYS * 86400000;
+  const now = Date.now();
+  return resaleSales
+    .filter(rs => rs.status === 'listed' && rs.date && (now - new Date(rs.date).getTime()) > thresholdMs)
+    .sort((a, b) => new Date(a.date) - new Date(b.date));
+}
+
+// pkt. 1 — HTML listy powiadomień o zbliżającym się/przekroczonym limicie
+// 48h, do użycia w zakładce "Przypomnienia" (wzorowane na getResaleTaskNotifHtml
+// z renderReminders — ta sama konwencja wizualna alertów).
+function getResaleShippingNotifHtml() {
+  const items = getResaleShippingDeadlineNotifs();
+  if (!items.length) return '';
+  const goToSales = `switchTab('earn'); setTimeout(()=>{const src=incomeSources.find(s=>s._profileType==='resale'); if(src){selectSource(src.id); resaleProfileSubTab[src.id]='sales'; renderResaleDetail(src);}},200)`;
+  return items.map(({ rs, remaining, overdue }) => {
+    const prod = resaleProducts.find(p => p.id === rs.productId);
+    const prodName = prod ? escH(prod.name) : (rs.customName ? escH(rs.customName) : '<span class="italic">Produkt</span>');
+    let timeLabel;
+    if (overdue) {
+      const overdueBy = Math.abs(remaining);
+      const h = Math.floor(overdueBy / 3600000);
+      timeLabel = `Przekroczono limit o ${h}h`;
+    } else {
+      const h = Math.floor(remaining / 3600000);
+      const m = Math.floor((remaining % 3600000) / 60000);
+      timeLabel = `Zostało ${h}h ${m}m`;
+    }
+    const urgColor = overdue
+      ? 'bg-rose-50 dark:bg-rose-900/30 border-rose-200 dark:border-rose-500/30 text-rose-800 dark:text-rose-300'
+      : 'bg-amber-50 dark:bg-amber-900/30 border-amber-200 dark:border-amber-500/30 text-amber-800 dark:text-amber-300';
+    return `
+    <div class="rounded-2xl border-2 p-3.5 ${urgColor} cursor-pointer hover:shadow-sm transition" onclick="${goToSales}">
+      <div class="flex items-center gap-3">
+        <div class="w-9 h-9 rounded-xl bg-white/60 dark:bg-black/20 flex items-center justify-center shrink-0">
+          <i data-lucide="${overdue ? 'alert-triangle' : 'truck'}" class="w-4 h-4"></i>
+        </div>
+        <div class="flex-1 min-w-0">
+          <p class="font-bold text-sm truncate">${prodName}</p>
+          <p class="text-xs mt-0.5 opacity-80">Limit 48h na wysyłkę · <strong>${timeLabel}</strong></p>
+        </div>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+// pkt. 3 — banner alertu "martwy stan", w tym samym stylu co getResaleSeasonAlertHTML(),
+// wyświetlany na górze zakładki Sprzedaż (patrz renderResaleSales).
+function getResaleStaleListingsAlertHTML() {
+  const stale = getResaleStaleListingsNotifs();
+  if (!stale.length) return '';
+  return `
+    <div class="flex items-start gap-3 px-4 py-3 rounded-2xl border bg-slate-50 dark:bg-slate-800/50 border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-300">
+      <i data-lucide="clock-alert" class="w-4 h-4 mt-0.5 shrink-0"></i>
+      <div class="flex-1 min-w-0">
+        <p class="text-xs font-bold">Martwy stan — ${stale.length} ${stale.length === 1 ? 'produkt wystawiony' : 'produkty/ów wystawionych'} od ponad ${RESALE_STALE_THRESHOLD_DAYS} dni bez sprzedaży</p>
+        <p class="text-xs mt-0.5 opacity-75">Może warto obniżyć cenę, zmienić zdjęcia albo platformę.</p>
+      </div>
+      <button onclick="scrollToResaleGroup('listed')" class="text-[11px] font-bold underline underline-offset-2 shrink-0 hover:opacity-70 transition">Pokaż</button>
+    </div>`;
+}
+
+// Przewija do grupy statusu na liście Sprzedaży (używane przez przycisk
+// "Pokaż" w alertach — pkt. 2 i 3 planu — bez duplikowania logiki filtrowania).
+function scrollToResaleGroup(status) {
+  const el = document.getElementById(`resale-sales-group-${status}`);
+  if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
 function submitResaleProduct(e) {
   e.preventDefault();
   const name     = document.getElementById('rp-name').value.trim();
@@ -12910,12 +13035,15 @@ let _resaleSaleTimerInterval = null;
 
 function renderResaleSales(s) {
   const STATUSES = ['listed','to_ship','shipped'];
-  const STATUS_LABEL = { listed:'Wystawiony', to_ship:'Do wysyłki', shipped:'Wysłany', done:'Sprzedany' };
+  // pkt.2 planu — 'overdue' to grupa WIRTUALNA (nie nowy rs.status), wyciągana
+  // z 'to_ship'; dodana na początku listy statusów tylko do celów wyświetlania.
+  const STATUS_LABEL = { listed:'Wystawiony', to_ship:'Do wysyłki', shipped:'Wysłany', done:'Sprzedany', overdue:'Przeterminowane' };
   const STATUS_COLOR = {
     listed:  'bg-indigo-100 dark:bg-indigo-500/20 text-indigo-700 dark:text-indigo-400',
     to_ship: 'bg-amber-100 dark:bg-amber-500/20 text-amber-700 dark:text-amber-400',
     shipped: 'bg-emerald-100 dark:bg-emerald-500/20 text-emerald-700 dark:text-emerald-400',
     done:    'bg-purple-100 dark:bg-purple-500/20 text-purple-700 dark:text-purple-400',
+    overdue: 'bg-rose-100 dark:bg-rose-500/20 text-rose-700 dark:text-rose-400',
   };
 
   const now = Date.now();
@@ -12923,110 +13051,127 @@ function renderResaleSales(s) {
   // Check if any items are in to_ship (need live timers)
   const hasToShip = resaleSales.some(rs => rs.status === 'to_ship');
 
-  const groupedSales = STATUSES.map(st => {
-    const sales = resaleSales.filter(rs => rs.status === st)
-      .sort((a,b) => {
-        if (st === 'to_ship') return (a.soldAt||0) - (b.soldAt||0); // most urgent first
-        return new Date(b.date) - new Date(a.date);
-      });
-    if (sales.length === 0) return '';
+  // Wydzielona z pętli funkcja renderowania pojedynczego wiersza sprzedaży —
+  // `st` to zawsze RZECZYWISTY rs.status (a nie grupa wirtualna), więc
+  // przyciski akcji/timer działają tak samo dla pozycji w grupie "Przeterminowane".
+  function buildSaleRow(rs, st) {
+    const prod     = resaleProducts.find(p => p.id === rs.productId);
+    const prodName = prod ? escH(prod.name) : '<span class="text-slate-400 italic">Produkt usunięty</span>';
+    const soldPrice = rs.soldPrice ?? rs.price;
+    const saleCost = getResaleSaleStoredCost(rs);
+    const saleProfit = getResaleSaleProfit(rs, soldPrice);
+    // Po przypisaniu paczki używamy zapisanego snapshotu rzeczywistych kosztów,
+    // a nie aktualnej szacowanej ceny produktu.
+    const profit = st === 'shipped' && saleCost.totalCost >= 0 ? saleProfit.profit : null;
 
-    const saleRows = sales.map(rs => {
-      const prod     = resaleProducts.find(p => p.id === rs.productId);
-      const prodName = prod ? escH(prod.name) : '<span class="text-slate-400 italic">Produkt usunięty</span>';
-      const soldPrice = rs.soldPrice ?? rs.price;
-      const saleCost = getResaleSaleStoredCost(rs);
-      const saleProfit = getResaleSaleProfit(rs, soldPrice);
-      // Po przypisaniu paczki używamy zapisanego snapshotu rzeczywistych kosztów,
-      // a nie aktualnej szacowanej ceny produktu.
-      const profit = st === 'shipped' && saleCost.totalCost >= 0 ? saleProfit.profit : null;
-
-      // Timer for to_ship
-      let timerHTML = '';
-      if (st === 'to_ship' && rs.soldAt) {
-        const deadline  = rs.soldAt + 48 * 3600 * 1000;
-        const remaining = deadline - now;
-        if (remaining > 0) {
-          const h = Math.floor(remaining / 3600000);
-          const m = Math.floor((remaining % 3600000) / 60000);
-          const s_ = Math.floor((remaining % 60000) / 1000);
-          const urgent = remaining < 6 * 3600 * 1000;
-          timerHTML = `<span class="resale-timer inline-flex items-center gap-1 text-xs font-bold px-2 py-0.5 rounded-lg ${urgent ? 'bg-rose-100 dark:bg-rose-500/20 text-rose-600 dark:text-rose-400' : 'bg-amber-100 dark:bg-amber-500/20 text-amber-700 dark:text-amber-400'}" data-deadline="${deadline}">
-            <i data-lucide="clock" class="w-3 h-3"></i>
-            <span class="resale-timer-text">${h}h ${m}m ${s_}s</span>
-          </span>`;
-        } else {
-          timerHTML = `<span class="inline-flex items-center gap-1 text-xs font-bold px-2 py-0.5 rounded-lg bg-rose-100 dark:bg-rose-500/20 text-rose-600 dark:text-rose-400 animate-pulse">
-            <i data-lucide="alert-triangle" class="w-3 h-3"></i>PRZEKROCZONO 48h!
-          </span>`;
-        }
+    // Timer for to_ship (w tym pozycje przeterminowane — st jest wciąż 'to_ship')
+    let timerHTML = '';
+    if (st === 'to_ship' && rs.soldAt) {
+      const deadline  = rs.soldAt + 48 * 3600 * 1000;
+      const remaining = deadline - now;
+      if (remaining > 0) {
+        const h = Math.floor(remaining / 3600000);
+        const m = Math.floor((remaining % 3600000) / 60000);
+        const s_ = Math.floor((remaining % 60000) / 1000);
+        const urgent = remaining < 6 * 3600 * 1000;
+        timerHTML = `<span class="resale-timer inline-flex items-center gap-1 text-xs font-bold px-2 py-0.5 rounded-lg ${urgent ? 'bg-rose-100 dark:bg-rose-500/20 text-rose-600 dark:text-rose-400' : 'bg-amber-100 dark:bg-amber-500/20 text-amber-700 dark:text-amber-400'}" data-deadline="${deadline}">
+          <i data-lucide="clock" class="w-3 h-3"></i>
+          <span class="resale-timer-text">${h}h ${m}m ${s_}s</span>
+        </span>`;
+      } else {
+        timerHTML = `<span class="inline-flex items-center gap-1 text-xs font-bold px-2 py-0.5 rounded-lg bg-rose-100 dark:bg-rose-500/20 text-rose-600 dark:text-rose-400 animate-pulse">
+          <i data-lucide="alert-triangle" class="w-3 h-3"></i>PRZEKROCZONO 48h!
+        </span>`;
       }
+    }
 
-      // Action buttons per status
-      let actionBtn = '';
-      if (st === 'listed') {
-        actionBtn = `<button onclick="openMarkSoldModal('${rs.id}')"
-          class="text-xs font-semibold px-3 py-1.5 rounded-lg bg-emerald-50 dark:bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 hover:bg-emerald-100 dark:hover:bg-emerald-500/20 transition flex items-center gap-1 whitespace-nowrap">
-          <i data-lucide="check" class="w-3 h-3"></i>Sprzedany
-        </button>`;
-      } else if (st === 'to_ship') {
-        const hasLabel = !!(rs._labelData);
-        actionBtn = `
-        <button onclick="openLabelModal('${rs.id}')"
-          class="text-xs font-semibold px-3 py-1.5 rounded-lg transition flex items-center gap-1 whitespace-nowrap
-            ${hasLabel
-              ? 'bg-emerald-50 dark:bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 hover:bg-emerald-100'
-              : 'bg-slate-100 dark:bg-slate-700 text-slate-500 dark:text-slate-400 hover:bg-slate-200 dark:hover:bg-slate-600'}">
-          <i data-lucide="${hasLabel ? 'file-check' : 'file-plus'}" class="w-3 h-3"></i>${hasLabel ? 'Etykieta ✓' : 'Etykieta'}
-        </button>
-        <button onclick="markResaleShipped('${rs.id}')"
-          class="text-xs font-semibold px-3 py-1.5 rounded-lg bg-blue-50 dark:bg-blue-500/10 text-blue-600 dark:text-blue-400 hover:bg-blue-100 dark:hover:bg-blue-500/20 transition flex items-center gap-1 whitespace-nowrap">
-          <i data-lucide="truck" class="w-3 h-3"></i>Wysłany
-        </button>`;
-      } else if (st === 'shipped') {
-        actionBtn = `<button onclick="finishResaleSale('${rs.id}')"
-          class="text-xs font-semibold px-3 py-1.5 rounded-lg bg-purple-50 dark:bg-purple-500/10 text-purple-600 dark:text-purple-400 hover:bg-purple-100 dark:hover:bg-purple-500/20 transition flex items-center gap-1 whitespace-nowrap">
-          <i data-lucide="flag" class="w-3 h-3"></i>Zakończ
-        </button>`;
-      }
-
-      return `
-      <div class="flex items-center gap-3 py-3 px-3 rounded-xl hover:bg-slate-50 dark:hover:bg-slate-800/60 transition">
-        <div class="w-9 h-9 rounded-xl flex items-center justify-center shrink-0
-          ${st==='listed' ? 'bg-indigo-50 dark:bg-indigo-500/10' : st==='to_ship' ? 'bg-amber-50 dark:bg-amber-500/10' : 'bg-emerald-50 dark:bg-emerald-500/10'}">
-          <i data-lucide="${st==='listed' ? 'tag' : st==='to_ship' ? 'truck' : 'package-check'}"
-            class="w-4 h-4 ${st==='listed' ? 'text-indigo-500' : st==='to_ship' ? 'text-amber-500' : 'text-emerald-500'}"></i>
-        </div>
-        <div class="flex-1 min-w-0">
-          <p class="text-sm font-semibold truncate">${prodName}</p>
-          <div class="flex items-center gap-2 flex-wrap mt-0.5">
-            <span class="text-xs text-slate-400">${fmtDate(rs.date)}</span>
-            ${rs.platform ? `<span class="inline-flex items-center gap-1 text-[10px] font-semibold px-1.5 py-0.5 rounded-md bg-indigo-50 dark:bg-indigo-500/10 text-indigo-600 dark:text-indigo-400">${{vinted:'👗',allegro:'🛒',olx:'📋',ebay:'🌐',facebook:'📘',inne:'📦'}[rs.platform]||'📦'} ${{vinted:'Vinted',allegro:'Allegro',olx:'OLX',ebay:'eBay',facebook:'Facebook',inne:'Inne'}[rs.platform]||rs.platform}</span>` : ''}
-            <span class="text-xs font-semibold text-slate-600 dark:text-slate-300">
-              ${fmt(rs.price)}${rs.soldPrice && rs.soldPrice !== rs.price ? ` → sprzedano za <strong>${fmt(rs.soldPrice)}</strong>` : ''}
-            </span>
-            ${profit != null ? `<span class="text-xs font-bold ${profit>=0?'text-emerald-600 dark:text-emerald-400':'text-rose-600 dark:text-rose-400'}">${profit>=0?'+':''}${fmt(profit)} profit</span>` : ''}
-            ${timerHTML}
-          </div>
-        </div>
-        <div class="flex items-center gap-1.5 shrink-0">
-          ${actionBtn}
-          <button onclick="deleteResaleSale('${rs.id}')"
-            class="text-slate-300 hover:text-rose-500 transition p-1.5 rounded-lg hover:bg-rose-50 dark:hover:bg-rose-500/10">
-            <i data-lucide="trash-2" class="w-3.5 h-3.5"></i>
-          </button>
-        </div>
-      </div>`;
-    }).join('');
+    // Action buttons per status
+    let actionBtn = '';
+    if (st === 'listed') {
+      actionBtn = `<button onclick="openMarkSoldModal('${rs.id}')"
+        class="text-xs font-semibold px-3 py-1.5 rounded-lg bg-emerald-50 dark:bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 hover:bg-emerald-100 dark:hover:bg-emerald-500/20 transition flex items-center gap-1 whitespace-nowrap">
+        <i data-lucide="check" class="w-3 h-3"></i>Sprzedany
+      </button>`;
+    } else if (st === 'to_ship') {
+      const hasLabel = !!(rs._labelData);
+      actionBtn = `
+      <button onclick="openLabelModal('${rs.id}')"
+        class="text-xs font-semibold px-3 py-1.5 rounded-lg transition flex items-center gap-1 whitespace-nowrap
+          ${hasLabel
+            ? 'bg-emerald-50 dark:bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 hover:bg-emerald-100'
+            : 'bg-slate-100 dark:bg-slate-700 text-slate-500 dark:text-slate-400 hover:bg-slate-200 dark:hover:bg-slate-600'}">
+        <i data-lucide="${hasLabel ? 'file-check' : 'file-plus'}" class="w-3 h-3"></i>${hasLabel ? 'Etykieta ✓' : 'Etykieta'}
+      </button>
+      <button onclick="markResaleShipped('${rs.id}')"
+        class="text-xs font-semibold px-3 py-1.5 rounded-lg bg-blue-50 dark:bg-blue-500/10 text-blue-600 dark:text-blue-400 hover:bg-blue-100 dark:hover:bg-blue-500/20 transition flex items-center gap-1 whitespace-nowrap">
+        <i data-lucide="truck" class="w-3 h-3"></i>Wysłany
+      </button>`;
+    } else if (st === 'shipped') {
+      actionBtn = `<button onclick="finishResaleSale('${rs.id}')"
+        class="text-xs font-semibold px-3 py-1.5 rounded-lg bg-purple-50 dark:bg-purple-500/10 text-purple-600 dark:text-purple-400 hover:bg-purple-100 dark:hover:bg-purple-500/20 transition flex items-center gap-1 whitespace-nowrap">
+        <i data-lucide="flag" class="w-3 h-3"></i>Zakończ
+      </button>`;
+    }
 
     return `
-    <div class="bg-white dark:bg-slate-900 rounded-2xl border border-slate-100 dark:border-slate-800 overflow-hidden">
+    <div class="flex items-center gap-3 py-3 px-3 rounded-xl hover:bg-slate-50 dark:hover:bg-slate-800/60 transition">
+      <div class="w-9 h-9 rounded-xl flex items-center justify-center shrink-0
+        ${st==='listed' ? 'bg-indigo-50 dark:bg-indigo-500/10' : st==='to_ship' ? 'bg-amber-50 dark:bg-amber-500/10' : 'bg-emerald-50 dark:bg-emerald-500/10'}">
+        <i data-lucide="${st==='listed' ? 'tag' : st==='to_ship' ? 'truck' : 'package-check'}"
+          class="w-4 h-4 ${st==='listed' ? 'text-indigo-500' : st==='to_ship' ? 'text-amber-500' : 'text-emerald-500'}"></i>
+      </div>
+      <div class="flex-1 min-w-0">
+        <p class="text-sm font-semibold truncate">${prodName}</p>
+        <div class="flex items-center gap-2 flex-wrap mt-0.5">
+          <span class="text-xs text-slate-400">${fmtDate(rs.date)}</span>
+          ${rs.platform ? `<span class="inline-flex items-center gap-1 text-[10px] font-semibold px-1.5 py-0.5 rounded-md bg-indigo-50 dark:bg-indigo-500/10 text-indigo-600 dark:text-indigo-400">${{vinted:'👗',allegro:'🛒',olx:'📋',ebay:'🌐',facebook:'📘',inne:'📦'}[rs.platform]||'📦'} ${{vinted:'Vinted',allegro:'Allegro',olx:'OLX',ebay:'eBay',facebook:'Facebook',inne:'Inne'}[rs.platform]||rs.platform}</span>` : ''}
+          <span class="text-xs font-semibold text-slate-600 dark:text-slate-300">
+            ${fmt(rs.price)}${rs.soldPrice && rs.soldPrice !== rs.price ? ` → sprzedano za <strong>${fmt(rs.soldPrice)}</strong>` : ''}
+          </span>
+          ${profit != null ? `<span class="text-xs font-bold ${profit>=0?'text-emerald-600 dark:text-emerald-400':'text-rose-600 dark:text-rose-400'}">${profit>=0?'+':''}${fmt(profit)} profit</span>` : ''}
+          ${timerHTML}
+        </div>
+      </div>
+      <div class="flex items-center gap-1.5 shrink-0">
+        ${actionBtn}
+        <button onclick="deleteResaleSale('${rs.id}')"
+          class="text-slate-300 hover:text-rose-500 transition p-1.5 rounded-lg hover:bg-rose-50 dark:hover:bg-rose-500/10">
+          <i data-lucide="trash-2" class="w-3.5 h-3.5"></i>
+        </button>
+      </div>
+    </div>`;
+  }
+
+  // pkt.2 — grupa "Przeterminowane" na samej górze (przed VIRTUAL_GROUPS
+  // z pozostałymi statusami), wyciągnięta z 'to_ship' żeby się nie dublować.
+  const VIRTUAL_GROUPS = ['overdue', ...STATUSES];
+
+  const groupedSales = VIRTUAL_GROUPS.map(vg => {
+    let sales;
+    if (vg === 'overdue') {
+      sales = resaleSales.filter(rs => isResaleSaleOverdue(rs))
+        .sort((a,b) => (a.soldAt||0) - (b.soldAt||0)); // most urgent (longest overdue) first
+    } else if (vg === 'to_ship') {
+      sales = resaleSales.filter(rs => rs.status === 'to_ship' && !isResaleSaleOverdue(rs))
+        .sort((a,b) => (a.soldAt||0) - (b.soldAt||0));
+    } else {
+      sales = resaleSales.filter(rs => rs.status === vg)
+        .sort((a,b) => new Date(b.date) - new Date(a.date));
+    }
+    if (sales.length === 0) return '';
+
+    // rs.status jest zawsze rzeczywistym statusem (dla 'overdue' to 'to_ship') —
+    // przekazujemy go do buildSaleRow, żeby akcje/timer działały tak samo.
+    const saleRows = sales.map(rs => buildSaleRow(rs, rs.status)).join('');
+
+    return `
+    <div id="resale-sales-group-${vg}" class="bg-white dark:bg-slate-900 rounded-2xl border ${vg === 'overdue' ? 'border-rose-200 dark:border-rose-500/30' : 'border-slate-100 dark:border-slate-800'} overflow-hidden">
       <div class="flex items-center justify-between px-4 py-3 bg-slate-50 dark:bg-slate-800/50 border-b border-slate-100 dark:border-slate-800">
         <div class="flex items-center gap-2">
-          <span class="text-xs font-bold px-2.5 py-1 rounded-full ${STATUS_COLOR[st]}">${STATUS_LABEL[st]}</span>
+          <span class="text-xs font-bold px-2.5 py-1 rounded-full ${STATUS_COLOR[vg]}">${STATUS_LABEL[vg]}</span>
           <span class="text-xs text-slate-400 font-medium">${sales.length} ${sales.length===1?'szt.':'szt.'}</span>
         </div>
-        ${st === 'to_ship' ? `<span class="text-[10px] text-slate-400">Sorted by urgency · 48h on shipping</span>` : ''}
+        ${vg === 'to_ship' ? `<span class="text-[10px] text-slate-400">Sorted by urgency · 48h on shipping</span>` : ''}
       </div>
       <div class="divide-y divide-slate-50 dark:divide-slate-800 px-2">${saleRows}</div>
     </div>`;
@@ -13076,10 +13221,15 @@ function renderResaleSales(s) {
     .map(p => `<option value="${p.id}">${escH(p.name)}${p.buyPrice ? ' — zakup '+fmt(p.buyPrice) : ''}</option>`)
     .join('');
 
+  // pkt.3 — alert "martwy stan" na górze zakładki Sprzedaż
+  const staleAlertHTML = getResaleStaleListingsAlertHTML();
+
   return `
   <div class="p-4 space-y-4">
     <!-- Modal placeholder -->
     <div id="resale-sold-modal-wrap"></div>
+
+    ${staleAlertHTML}
 
     <!-- Add sale form -->
     <div class="bg-slate-50 dark:bg-slate-800/40 rounded-2xl p-4 border border-slate-100 dark:border-slate-700">
@@ -17801,17 +17951,24 @@ function renderReminders() {
   }
   const resaleTaskNotifHtml = getResaleTaskNotifHtml();
 
+  // Faza 1, pkt.1 — przesyłki zbliżające się do/po limicie 48h na wysyłkę
+  const shippingNotifHtml = getResaleShippingNotifHtml();
+
   box.innerHTML =
+    (shippingNotifHtml ? `
+      <p class="text-xs font-semibold text-rose-500 uppercase tracking-wider flex items-center gap-1.5 px-1"><i data-lucide="truck" class="w-3.5 h-3.5"></i> Resale — limit 48h na wysyłkę</p>
+      ${shippingNotifHtml}
+    ` : '') +
     (seasonOrderHtml ? `
-      <p class="text-xs font-semibold text-orange-400 uppercase tracking-wider flex items-center gap-1.5 px-1"><i data-lucide="sun" class="w-3.5 h-3.5"></i> Resale — nadchodzący sezon</p>
+      <p class="text-xs font-semibold text-orange-400 uppercase tracking-wider flex items-center gap-1.5 px-1 ${shippingNotifHtml?'pt-2':''}"><i data-lucide="sun" class="w-3.5 h-3.5"></i> Resale — nadchodzący sezon</p>
       ${seasonOrderHtml}
     ` : '') +
     (resaleTaskNotifHtml ? `
-      <p class="text-xs font-semibold text-amber-500 uppercase tracking-wider flex items-center gap-1.5 px-1 ${seasonOrderHtml?'pt-2':''}"><i data-lucide="check-square" class="w-3.5 h-3.5"></i> Resale — zadania do wykonania</p>
+      <p class="text-xs font-semibold text-amber-500 uppercase tracking-wider flex items-center gap-1.5 px-1 ${shippingNotifHtml||seasonOrderHtml?'pt-2':''}"><i data-lucide="check-square" class="w-3.5 h-3.5"></i> Resale — zadania do wykonania</p>
       ${resaleTaskNotifHtml}
     ` : '') +
     (recurringHtml ? `
-      <p class="text-xs font-semibold text-indigo-400 uppercase tracking-wider flex items-center gap-1.5 px-1 ${seasonOrderHtml||resaleTaskNotifHtml?'pt-2':''}"><i data-lucide="repeat" class="w-3.5 h-3.5"></i> Z cyklicznych — zapadają wkrótce</p>
+      <p class="text-xs font-semibold text-indigo-400 uppercase tracking-wider flex items-center gap-1.5 px-1 ${shippingNotifHtml||seasonOrderHtml||resaleTaskNotifHtml?'pt-2':''}"><i data-lucide="repeat" class="w-3.5 h-3.5"></i> Z cyklicznych — zapadają wkrótce</p>
       ${recurringHtml}
     ` : '') +
     (recurringHtml && manualHtml ? `<p class="text-xs font-semibold text-slate-400 uppercase tracking-wider px-1 pt-1">Twoje przypomnienia</p>` : '') +
