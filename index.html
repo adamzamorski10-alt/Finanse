@@ -2710,6 +2710,47 @@
   </div>
 </div>
 
+<!-- ═══ MODAL: USTAWIENIA RESALE (Faza 2, pkt.11) ═══ -->
+<div id="resale-settings-modal" class="hidden fixed inset-0 z-[60] flex items-center justify-center p-4">
+  <div class="absolute inset-0 bg-slate-900/40 dark:bg-slate-950/60 backdrop-blur-sm" onclick="closeResaleSettingsModal()"></div>
+  <div class="relative bg-white dark:bg-slate-900 rounded-2xl shadow-xl border border-slate-100 dark:border-slate-800 w-full max-w-sm p-6 max-h-[85vh] overflow-y-auto">
+    <div class="flex items-center justify-between mb-4">
+      <p class="font-semibold flex items-center gap-2"><i data-lucide="settings" class="w-4 h-4 text-amber-500"></i> Ustawienia Resale</p>
+      <button onclick="closeResaleSettingsModal()" class="text-slate-400 hover:text-slate-600 transition"><i data-lucide="x" class="w-5 h-5"></i></button>
+    </div>
+    <form id="resale-settings-form" class="space-y-4">
+      <div>
+        <label class="text-xs font-medium text-slate-500 mb-1 block">Próg "martwego stanu" (dni bez sprzedaży)</label>
+        <input required type="number" step="1" min="1" id="rset-stale-days"
+          class="w-full rounded-xl border border-slate-200 dark:border-slate-700 dark:bg-slate-800 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-amber-300">
+      </div>
+      <div>
+        <label class="text-xs font-medium text-slate-500 mb-1 block">Domyślny próg niskiego stanu magazynowego</label>
+        <input required type="number" step="1" min="0" id="rset-min-stock"
+          class="w-full rounded-xl border border-slate-200 dark:border-slate-700 dark:bg-slate-800 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-amber-300">
+        <p class="text-[11px] text-slate-400 mt-1">Używany dla produktów, które nie mają ustawionego własnego progu.</p>
+      </div>
+      <div>
+        <label class="text-xs font-medium text-slate-500 mb-1 block">Stawka wysyłki (zł/kg)</label>
+        <input required type="number" step="0.5" min="0" id="rset-ship-per-kg"
+          class="w-full rounded-xl border border-slate-200 dark:border-slate-700 dark:bg-slate-800 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-amber-300">
+      </div>
+      <div>
+        <label class="text-xs font-medium text-slate-500 mb-1.5 block">Prowizje platform (%)</label>
+        <div class="grid grid-cols-2 gap-2">
+          <div><label class="text-[10px] text-slate-400 block mb-0.5">Vinted</label><input type="number" step="0.1" min="0" id="rset-comm-vinted" class="w-full rounded-lg border border-slate-200 dark:border-slate-700 dark:bg-slate-800 px-2 py-1.5 text-sm"></div>
+          <div><label class="text-[10px] text-slate-400 block mb-0.5">Allegro</label><input type="number" step="0.1" min="0" id="rset-comm-allegro" class="w-full rounded-lg border border-slate-200 dark:border-slate-700 dark:bg-slate-800 px-2 py-1.5 text-sm"></div>
+          <div><label class="text-[10px] text-slate-400 block mb-0.5">OLX</label><input type="number" step="0.1" min="0" id="rset-comm-olx" class="w-full rounded-lg border border-slate-200 dark:border-slate-700 dark:bg-slate-800 px-2 py-1.5 text-sm"></div>
+          <div><label class="text-[10px] text-slate-400 block mb-0.5">eBay</label><input type="number" step="0.1" min="0" id="rset-comm-ebay" class="w-full rounded-lg border border-slate-200 dark:border-slate-700 dark:bg-slate-800 px-2 py-1.5 text-sm"></div>
+          <div><label class="text-[10px] text-slate-400 block mb-0.5">Facebook</label><input type="number" step="0.1" min="0" id="rset-comm-facebook" class="w-full rounded-lg border border-slate-200 dark:border-slate-700 dark:bg-slate-800 px-2 py-1.5 text-sm"></div>
+          <div><label class="text-[10px] text-slate-400 block mb-0.5">Inne</label><input type="number" step="0.1" min="0" id="rset-comm-inne" class="w-full rounded-lg border border-slate-200 dark:border-slate-700 dark:bg-slate-800 px-2 py-1.5 text-sm"></div>
+        </div>
+      </div>
+      <button type="submit" class="w-full px-5 py-2.5 rounded-xl bg-amber-500 text-white text-sm font-semibold hover:bg-amber-600 transition">Zapisz ustawienia</button>
+    </form>
+  </div>
+</div>
+
 <!-- ═══ MODAL: GOAL ═══ -->
 <div id="goal-modal" class="hidden fixed inset-0 z-[60] flex items-center justify-center p-4">
   <div class="absolute inset-0 bg-slate-900/40 dark:bg-slate-950/60 backdrop-blur-sm" onclick="closeGoalModal()"></div>
@@ -3833,6 +3874,7 @@ const SK = {
   resaleTasks:  'finapp_resale_tasks',
   resaleShipments: 'finapp_resale_shipments',
   resaleEvents: 'finapp_resale_events', // Silnik zdarzeń Resale (Faza 0.2 planu rozbudowy) — pełna historia zdarzeń, nie tylko finalne statusy
+  resaleSettings: 'finapp_resale_settings', // Faza 2, pkt.11 — progi/stawki modułu Resale (panel "Ustawienia Resale")
   gieldaOps:    'finapp_gielda_ops',
   stronyClients: 'finapp_strony_clients',
   dashboardLayouts: 'finapp_dashboard_layouts', // legacy — użyty tylko do jednorazowej migracji, patrz ensureDashboardLayouts()
@@ -3928,6 +3970,17 @@ let resaleSales    = [];    // [{id, productId, price, date, status, soldAt, shi
 let resaleTasks      = [];      // [{id, title, type, dueDate, productId?, done, createdAt}]
 let resaleShipments  = [];  // [{id, name, items:[{productId,qty}], createdAt, ordered, orderedAt}]
 let resaleEvents     = [];  // [{id, at, type, entity:'product'|'sale'|'shipment'|'task', entityId, meta:{...}}] — Silnik zdarzeń (Faza 0.2)
+
+// Faza 2, pkt.11 — panel "Ustawienia Resale": progi i stawki dawniej sztywne w kodzie,
+// teraz edytowalne i zapisywane w SK.resaleSettings. RESALE_DEFAULTS to fallback,
+// gdy w Firebase jeszcze nic nie ma (pierwsze uruchomienie po wdrożeniu Fazy 2).
+const RESALE_SETTINGS_DEFAULTS = {
+  staleThresholdDays: 30,       // pkt.3 — próg "martwego stanu"
+  defaultMinStockAlert: 2,      // pkt.11 — domyślny próg niskiego stanu dla produktów bez własnego minStockAlert
+  shipPerKg: 65,                // dawniej stała resaleSettings.shipPerKg
+  platformCommissions: { vinted: 0, allegro: 10, olx: 0, ebay: 10, facebook: 0, inne: 0 }, // pkt.9 — % prowizji, edytowalne
+};
+let resaleSettings = { ...RESALE_SETTINGS_DEFAULTS };
 let gieldaOps        = [];        // [{id, type, name, amount, date, where?}]
 let stronyClients    = [];    // [{id, name, email?, phone?, industry?, address?, hasWebsite?, mediaLink?, googleMapsLink?, message?, status, estimatedPrice?, specs?, soldPrice?, soldPlace?, soldDate?, createdAt}]
 
@@ -4387,6 +4440,7 @@ function startOwnerListener(uidToWatch) {
     resaleTasks      = load(SK.resaleTasks, []);
     resaleShipments  = load(SK.resaleShipments, []);
     resaleEvents     = load(SK.resaleEvents, []);
+    resaleSettings   = { ...RESALE_SETTINGS_DEFAULTS, ...load(SK.resaleSettings, {}) }; // Faza 2, pkt.11 — merge, żeby nowe pola dodane później miały sensowny default
     gieldaOps        = load(SK.gieldaOps, []);
     stronyClients    = load(SK.stronyClients, []);
     dashboardLayouts = null; // wymuś ponowne złożenie z aktualnych danych Firebase (patrz ensureDashboardLayouts)
@@ -4548,7 +4602,8 @@ function updateRemindersBadge() {
   const hasTaskNotifs = resaleTasks.some(t => !t.done && t.dueDate && t.dueDate <= soon);
   const hasShippingNotifs = getResaleShippingDeadlineNotifs().length > 0; // Faza 1, pkt.1
   const hasStaleNotifs = getResaleStaleListingsNotifs().length > 0; // Faza 1, pkt.3
-  const hasBadge = hasSeasonNotifs || hasTaskNotifs || hasShippingNotifs || hasStaleNotifs;
+  const hasLowStockNotifs = getResaleLowStockNotifs().length > 0; // Faza 2, pkt.11
+  const hasBadge = hasSeasonNotifs || hasTaskNotifs || hasShippingNotifs || hasStaleNotifs || hasLowStockNotifs;
   ['reminders-nav-badge','reminders-nav-badge-mobile'].forEach(id => {
     const el = document.getElementById(id);
     if (!el) return;
@@ -11204,6 +11259,7 @@ function renderResaleDetail(s) {
             <div><p class="text-[10px] text-slate-400">Wydatki</p><p class="text-sm font-bold text-rose-600 dark:text-rose-400">-${fmt(totalExpense)}</p></div>
             <div><p class="text-[10px] text-slate-400">Saldo</p><p class="text-sm font-bold ${balance>=0?'text-emerald-600 dark:text-emerald-400':'text-rose-600 dark:text-rose-400'}">${balance>=0?'+':''}${fmt(balance)}</p></div>
           </div>
+          <button onclick="openResaleSettingsModal()" title="Ustawienia Resale" class="text-slate-300 hover:text-amber-500 transition p-2 rounded-xl hover:bg-amber-50 dark:hover:bg-amber-500/10 shrink-0"><i data-lucide="settings" class="w-4 h-4"></i></button>
           <button onclick="deleteSource('${s.id}')" class="text-slate-300 hover:text-rose-500 transition p-2 rounded-xl hover:bg-rose-50 dark:hover:bg-rose-500/10 shrink-0"><i data-lucide="trash-2" class="w-4 h-4"></i></button>
         </div>
       </div>
@@ -11946,7 +12002,7 @@ function submitResaleHistory(e, sourceId) {
 
 /* ── B2: Produkty Resale (stub — będą rozbudowane w dalszych krokach) ── */
 let resaleProductEditId = null;
-const RESALE_SHIP_PER_KG = 65;
+// Faza 2, pkt.11: przeniesione do resaleSettings.shipPerKg (edytowalne w panelu "Ustawienia Resale")
 
 let resaleProductExpanded = {}; // { [productId]: boolean }
 let resaleProductSearch   = '';  // current search query
@@ -11981,7 +12037,7 @@ function renderResaleProducts(s) {
 
   // Compute per-product stats for sorting/filtering
   function getProdStats(p) {
-    const shipCost  = p.weight ? p.weight * RESALE_SHIP_PER_KG : 0;
+    const shipCost  = p.weight ? p.weight * resaleSettings.shipPerKg : 0;
     const totalCost = (p.buyPrice||0) + shipCost;
     const allSales  = resaleSales.filter(rs => rs.productId===p.id);
     const cntListed  = allSales.filter(rs => rs.status==='listed').length;
@@ -12040,7 +12096,7 @@ function renderResaleProducts(s) {
 
   const prodCards = resaleProducts.length ? (prods.length ? prods.map(p => {
     const expanded  = !!resaleProductExpanded[p.id];
-    const shipCost  = p.weight ? p.weight * RESALE_SHIP_PER_KG : 0;
+    const shipCost  = p.weight ? p.weight * resaleSettings.shipPerKg : 0;
     const totalCost = (p.buyPrice||0) + shipCost;
     const allSales  = resaleSales.filter(rs => rs.productId===p.id);
     const cntListed  = allSales.filter(rs => rs.status==='listed').length;
@@ -12088,11 +12144,11 @@ function renderResaleProducts(s) {
           <!-- ROI preview for edit form -->
           <div id="rep-roi-preview" class="${(p.buyPrice||0)>0&&(p.sellPrice||0)>0?'':'hidden'} rounded-xl border border-emerald-200 dark:border-emerald-500/30 bg-emerald-50 dark:bg-emerald-500/5 px-3 py-2 flex items-center gap-3 text-xs">
             <i data-lucide="trending-up" class="w-3.5 h-3.5 text-emerald-500 shrink-0"></i>
-            <span id="rep-roi-text" class="font-semibold">${(()=>{const buy=p.buyPrice||0,sell=p.sellPrice||0,ship=p.weight?p.weight*RESALE_SHIP_PER_KG:0,cost=buy+ship,profit=sell-cost,roi=cost>0?profit/cost*100:0;return buy>0&&sell>0?`Zysk: ${profit>=0?'+':''}${fmt(profit)} · ROI: ${roi.toFixed(1)}%`:'';})()}</span>
+            <span id="rep-roi-text" class="font-semibold">${(()=>{const buy=p.buyPrice||0,sell=p.sellPrice||0,ship=p.weight?p.weight*resaleSettings.shipPerKg:0,cost=buy+ship,profit=sell-cost,roi=cost>0?profit/cost*100:0;return buy>0&&sell>0?`Zysk: ${profit>=0?'+':''}${fmt(profit)} · ROI: ${roi.toFixed(1)}%`:'';})()}</span>
           </div>
           <div class="flex flex-col sm:flex-row gap-2">
             <div class="flex-1">
-              <label class="text-xs font-medium text-slate-400 mb-1 block">Waga (kg) <span class="font-normal text-slate-300">~${RESALE_SHIP_PER_KG} zł/kg</span></label>
+              <label class="text-xs font-medium text-slate-400 mb-1 block">Waga (kg) <span class="font-normal text-slate-300">~${resaleSettings.shipPerKg} zł/kg</span></label>
               <input type="number" step="0.001" min="0" id="rep-weight" value="${p.weight||''}" placeholder="np. 0.500"
                 class="w-full rounded-xl border border-slate-200 dark:border-slate-700 dark:bg-slate-800 px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-amber-300"
                 oninput="updateRepShippingPreview()">
@@ -12102,10 +12158,16 @@ function renderResaleProducts(s) {
               <input type="number" min="0" step="1" id="rep-quantity" value="${p.quantity||0}"
                 class="w-full rounded-xl border border-slate-200 dark:border-slate-700 dark:bg-slate-800 px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-amber-300">
             </div>
+            <div class="sm:w-32">
+              <label class="text-xs font-medium text-slate-400 mb-1 block">Próg niskiego stanu</label>
+              <input type="number" min="0" step="1" id="rep-min-stock" value="${p.minStockAlert ?? resaleSettings.defaultMinStockAlert}"
+                title="Poniżej tej ilości pojawi się alert 'Niski stan' (pkt. 11)"
+                class="w-full rounded-xl border border-slate-200 dark:border-slate-700 dark:bg-slate-800 px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-amber-300">
+            </div>
             <div class="sm:w-40">
               <label class="text-xs font-medium text-slate-400 mb-1 block">Szac. koszt dostawy</label>
               <div id="rep-ship-preview" class="w-full rounded-xl border border-slate-100 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 px-3 py-2.5 text-sm font-semibold text-blue-600 dark:text-blue-400">
-                ${p.weight ? fmt(p.weight*RESALE_SHIP_PER_KG) : '—'}
+                ${p.weight ? fmt(p.weight*resaleSettings.shipPerKg) : '—'}
               </div>
             </div>
           </div>
@@ -12173,6 +12235,7 @@ function renderResaleProducts(s) {
     const statusPills = `
       ${seasonSection}
       ${(p.quantity||0) > 0 ? `<span class="inline-flex items-center gap-1 text-[10px] font-semibold px-1.5 py-0.5 rounded-md bg-blue-50 dark:bg-blue-500/10 text-blue-600 dark:text-blue-400"><i data-lucide="box" class="w-2.5 h-2.5"></i>${p.quantity||0} szt.</span>` : ''}
+      ${(p.quantity||0) <= (p.minStockAlert != null ? p.minStockAlert : resaleSettings.defaultMinStockAlert) ? `<span class="inline-flex items-center gap-1 text-[10px] font-bold px-1.5 py-0.5 rounded-md bg-rose-50 dark:bg-rose-500/10 text-rose-600 dark:text-rose-400" title="Próg niskiego stanu: ${p.minStockAlert != null ? p.minStockAlert : resaleSettings.defaultMinStockAlert}"><i data-lucide="alert-triangle" class="w-2.5 h-2.5"></i>Niski stan</span>` : ''}
       ${orderedQty > 0 ? `<span class="inline-flex items-center gap-1 text-[10px] font-semibold px-1.5 py-0.5 rounded-md bg-violet-50 dark:bg-violet-500/10 text-violet-600 dark:text-violet-400"><i data-lucide="shopping-cart" class="w-2.5 h-2.5"></i>Zamówione: ${orderedQty} szt.</span>` : ''}
       <span class="inline-flex items-center gap-1 text-[10px] font-semibold px-1.5 py-0.5 rounded-md bg-indigo-50 dark:bg-indigo-500/10 text-indigo-600 dark:text-indigo-400">${cntListed} wyst.</span>
       <span class="inline-flex items-center gap-1 text-[10px] font-semibold px-1.5 py-0.5 rounded-md bg-amber-50 dark:bg-amber-500/10 text-amber-600 dark:text-amber-400">${cntToShip} wysy.</span>
@@ -12248,6 +12311,22 @@ function renderResaleProducts(s) {
           }).join('')}
         </div>
       </div>` : ''}
+      <!-- Historia cen zakupu (Faza 2, pkt.12) -->
+      ${Array.isArray(p.priceHistory) && p.priceHistory.length > 1 ? `
+      <div class="border-t border-slate-100 dark:border-slate-800 px-4 py-3">
+        <p class="text-[10px] font-bold text-slate-400 uppercase tracking-wide mb-2 flex items-center gap-1.5"><i data-lucide="history" class="w-3 h-3"></i>Historia cen zakupu</p>
+        <div class="space-y-1">
+          ${[...p.priceHistory].sort((a,b)=>a.at-b.at).map((h, i, arr) => {
+            const prev = i > 0 ? arr[i-1].buyPrice : null;
+            const trend = prev == null ? '' : h.buyPrice > prev ? '<span class="text-rose-500">↑</span>' : h.buyPrice < prev ? '<span class="text-emerald-500">↓</span>' : '<span class="text-slate-300">→</span>';
+            const srcLabel = h.source === 'shipment' ? `Paczka${h.shipmentId ? ' #' + h.shipmentId.slice(-4) : ''}` : 'Ręcznie';
+            return `<div class="flex items-center justify-between text-xs">
+              <span class="text-slate-400">${fmtDate(new Date(h.at).toISOString().slice(0,10))} · ${escH(srcLabel)}</span>
+              <span class="font-semibold">${fmt(h.buyPrice)} ${trend}</span>
+            </div>`;
+          }).join('')}
+        </div>
+      </div>` : ''}
       <!-- Profit row -->
       ${avgSoldPrice != null ? `
       <div class="bg-slate-50 dark:bg-slate-800/50 border-t border-slate-100 dark:border-slate-800 px-4 py-3 flex items-center justify-between gap-3">
@@ -12319,8 +12398,13 @@ function renderResaleProducts(s) {
     `<option value="${p.id}">${escH(p.name)}${(p.quantity||0) > 0 ? ' (masz: '+(p.quantity||0)+')' : ''}</option>`
   ).join('');
 
+  // pkt.11 — baner zbiorczy "Niski stan" na górze zakładki Produkty
+  const lowStockAlertHTML = getResaleLowStockAlertHTML();
+
   return `
   <div class="p-4 space-y-4">
+
+    ${lowStockAlertHTML}
 
     <!-- Add form (above list) -->
     <div class="bg-slate-50 dark:bg-slate-800/40 rounded-2xl p-4 border border-slate-100 dark:border-slate-700">
@@ -12354,7 +12438,7 @@ function renderResaleProducts(s) {
         </div>
         <div class="flex flex-col sm:flex-row gap-2">
           <div class="flex-1">
-            <label class="text-xs font-medium text-slate-400 mb-1 block">Waga (kg) <span class="font-normal text-slate-300">— dostawa ~${RESALE_SHIP_PER_KG} zł/kg</span></label>
+            <label class="text-xs font-medium text-slate-400 mb-1 block">Waga (kg) <span class="font-normal text-slate-300">— dostawa ~${resaleSettings.shipPerKg} zł/kg</span></label>
             <input type="number" step="0.001" min="0" id="rp-weight" placeholder="np. 0.500"
               class="w-full rounded-xl border border-slate-200 dark:border-slate-700 dark:bg-slate-800 px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-amber-300"
               oninput="updateRpShippingPreview()">
@@ -12773,7 +12857,7 @@ function ensureResaleDataDefaults() {
         ? [{ buyPrice: p.buyPrice, source: 'manual', at: p.createdAt || Date.now() }]
         : [];
     }
-    if (p.minStockAlert == null) p.minStockAlert = 2; // domyślny próg niskiego stanu (pkt. 11)
+    if (p.minStockAlert == null) p.minStockAlert = resaleSettings.defaultMinStockAlert; // Faza 2, pkt.11 — z panelu Ustawień
   });
 
   (resaleSales || []).forEach(rs => {
@@ -12829,11 +12913,8 @@ function _hasLoggedResaleEventToday(type, entityId) {
    pkt. 3: "martwy stan" — produkty wystawione bez sprzedaży)
 ══════════════════════════════════ */
 
-// Próg (w dniach) dla alertu "martwy stan" (pkt. 3). Domyślnie 30 dni —
-// w Fazie 2 (pkt. 11, panel "Ustawienia Resale") stanie się edytowalny
-// i zapisywany w SK.resaleSettings; na razie zmienna globalna z rozsądnym
-// defaultem, żeby reszta kodu (poniżej) mogła już z niej korzystać.
-let RESALE_STALE_THRESHOLD_DAYS = 30;
+// Próg (w dniach) dla alertu "martwy stan" (pkt. 3) — Faza 2, pkt.11: edytowalny
+// w panelu "Ustawienia Resale", zapisywany w SK.resaleSettings.
 
 // pkt. 2 — "przeterminowane" jest właściwością POCHODNĄ, nie nowym statusem
 // (żeby nie rozwałkować filtrów po rs.status w reszcie appki).
@@ -12859,7 +12940,7 @@ function getResaleShippingDeadlineNotifs() {
 
 // pkt. 3 — produkty wystawione (status 'listed') dłużej niż próg bez sprzedaży.
 function getResaleStaleListingsNotifs() {
-  const thresholdMs = RESALE_STALE_THRESHOLD_DAYS * 86400000;
+  const thresholdMs = resaleSettings.staleThresholdDays * 86400000;
   const now = Date.now();
   return resaleSales
     .filter(rs => rs.status === 'listed' && rs.date && (now - new Date(rs.date).getTime()) > thresholdMs)
@@ -12913,10 +12994,34 @@ function getResaleStaleListingsAlertHTML() {
     <div class="flex items-start gap-3 px-4 py-3 rounded-2xl border bg-slate-50 dark:bg-slate-800/50 border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-300">
       <i data-lucide="clock-alert" class="w-4 h-4 mt-0.5 shrink-0"></i>
       <div class="flex-1 min-w-0">
-        <p class="text-xs font-bold">Martwy stan — ${stale.length} ${stale.length === 1 ? 'produkt wystawiony' : 'produkty/ów wystawionych'} od ponad ${RESALE_STALE_THRESHOLD_DAYS} dni bez sprzedaży</p>
+        <p class="text-xs font-bold">Martwy stan — ${stale.length} ${stale.length === 1 ? 'produkt wystawiony' : 'produkty/ów wystawionych'} od ponad ${resaleSettings.staleThresholdDays} dni bez sprzedaży</p>
         <p class="text-xs mt-0.5 opacity-75">Może warto obniżyć cenę, zmienić zdjęcia albo platformę.</p>
       </div>
       <button onclick="scrollToResaleGroup('listed')" class="text-[11px] font-bold underline underline-offset-2 shrink-0 hover:opacity-70 transition">Pokaż</button>
+    </div>`;
+}
+
+// Faza 2, pkt.11 — produkty, których stan magazynowy spadł do progu
+// (własnego minStockAlert lub domyślnego z Ustawień Resale) lub poniżej.
+function getResaleLowStockNotifs() {
+  return resaleProducts
+    .filter(p => (p.quantity||0) <= (p.minStockAlert != null ? p.minStockAlert : resaleSettings.defaultMinStockAlert))
+    .sort((a,b) => (a.quantity||0) - (b.quantity||0));
+}
+
+// pkt.11 — banner zbiorczy "Niski stan" na górze listy Produktów, w tym
+// samym stylu co pozostałe alerty Resale (martwy stan, sezonowe).
+function getResaleLowStockAlertHTML() {
+  const low = getResaleLowStockNotifs();
+  if (!low.length) return '';
+  return `
+    <div class="flex items-start gap-3 px-4 py-3 rounded-2xl border bg-amber-50 dark:bg-amber-900/20 border-amber-200 dark:border-amber-500/30 text-amber-800 dark:text-amber-300">
+      <i data-lucide="package-x" class="w-4 h-4 mt-0.5 shrink-0"></i>
+      <div class="flex-1 min-w-0">
+        <p class="text-xs font-bold">Niski stan — ${low.length} ${low.length === 1 ? 'produkt kończy się' : 'produkty/ów kończy się'} na magazynie</p>
+        <p class="text-xs mt-0.5 opacity-75">${low.slice(0,3).map(p=>escH(p.name)).join(', ')}${low.length>3 ? ` i ${low.length-3} więcej` : ''}</p>
+      </div>
+      <button onclick="setResaleProductStatusFilter('no_stock')" class="text-[11px] font-bold underline underline-offset-2 shrink-0 hover:opacity-70 transition">Pokaż</button>
     </div>`;
 }
 
@@ -12926,6 +13031,51 @@ function scrollToResaleGroup(status) {
   const el = document.getElementById(`resale-sales-group-${status}`);
   if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
+
+/* ══════════════════════════════════
+   FAZA 2, pkt.11 — Panel "Ustawienia Resale"
+   Progi/stawki dawniej sztywne w kodzie (RESALE_SHIP_PER_KG,
+   RESALE_STALE_THRESHOLD_DAYS) — teraz w resaleSettings, edytowalne tutaj
+   i zapisywane w SK.resaleSettings.
+══════════════════════════════════ */
+function openResaleSettingsModal() {
+  const c = resaleSettings.platformCommissions || {};
+  document.getElementById('rset-stale-days').value   = resaleSettings.staleThresholdDays;
+  document.getElementById('rset-min-stock').value    = resaleSettings.defaultMinStockAlert;
+  document.getElementById('rset-ship-per-kg').value  = resaleSettings.shipPerKg;
+  document.getElementById('rset-comm-vinted').value   = c.vinted ?? 0;
+  document.getElementById('rset-comm-allegro').value  = c.allegro ?? 0;
+  document.getElementById('rset-comm-olx').value      = c.olx ?? 0;
+  document.getElementById('rset-comm-ebay').value     = c.ebay ?? 0;
+  document.getElementById('rset-comm-facebook').value = c.facebook ?? 0;
+  document.getElementById('rset-comm-inne').value     = c.inne ?? 0;
+  document.getElementById('resale-settings-modal').classList.remove('hidden');
+}
+function closeResaleSettingsModal() {
+  document.getElementById('resale-settings-modal').classList.add('hidden');
+}
+document.getElementById('resale-settings-form').addEventListener('submit', e => {
+  e.preventDefault();
+  resaleSettings = {
+    staleThresholdDays:   parseInt(document.getElementById('rset-stale-days').value) || RESALE_SETTINGS_DEFAULTS.staleThresholdDays,
+    defaultMinStockAlert: parseInt(document.getElementById('rset-min-stock').value) ?? RESALE_SETTINGS_DEFAULTS.defaultMinStockAlert,
+    shipPerKg:            parseFloat(document.getElementById('rset-ship-per-kg').value) || RESALE_SETTINGS_DEFAULTS.shipPerKg,
+    platformCommissions: {
+      vinted:   parseFloat(document.getElementById('rset-comm-vinted').value)   || 0,
+      allegro:  parseFloat(document.getElementById('rset-comm-allegro').value)  || 0,
+      olx:      parseFloat(document.getElementById('rset-comm-olx').value)      || 0,
+      ebay:     parseFloat(document.getElementById('rset-comm-ebay').value)     || 0,
+      facebook: parseFloat(document.getElementById('rset-comm-facebook').value) || 0,
+      inne:     parseFloat(document.getElementById('rset-comm-inne').value)     || 0,
+    },
+  };
+  save(SK.resaleSettings, resaleSettings);
+  closeResaleSettingsModal();
+  // Odśwież widoki, które czytają z resaleSettings (progi/stawka wpływają na alerty, ROI, listy)
+  const src = incomeSources.find(x => x._profileType === 'resale');
+  if (src) renderResaleDetail(src);
+  toast('Ustawienia Resale zapisane ✓');
+});
 
 function submitResaleProduct(e) {
   e.preventDefault();
@@ -12944,7 +13094,7 @@ function submitResaleProduct(e) {
   resaleProducts.push({
     id: newProductId, name, buyPrice, sellPrice, weight, link, links, notes, imageUrl, season, createdAt: Date.now(),
     priceHistory: (buyPrice != null) ? [{ buyPrice, source: 'manual', at: Date.now() }] : [], // Faza 0.1
-    minStockAlert: 2, // Faza 0.1 — domyślny próg, edytowalny w Fazie 2 (pkt. 11)
+    minStockAlert: resaleSettings.defaultMinStockAlert, // Faza 2, pkt.11 — z panelu Ustawień; edytowalne per produkt w formularzu edycji
   });
   save(SK.resaleProducts, resaleProducts);
   logResaleEvent('product_created', 'product', newProductId, { buyPrice, sellPrice, season });
@@ -12991,6 +13141,7 @@ function submitResaleProductEdit(e) {
   const sellPrice = parseFloat(document.getElementById('rep-sellPrice').value) || 0;
   const weight   = parseFloat(document.getElementById('rep-weight').value) || 0;
   const quantity = Math.max(0, parseInt(document.getElementById('rep-quantity')?.value, 10) || 0);
+  const minStockAlert = Math.max(0, parseInt(document.getElementById('rep-min-stock')?.value, 10) || 0); // Faza 2, pkt.11
   const links    = Array.from(document.querySelectorAll('#rep-links-container .rep-link-input')).map(i=>i.value.trim()).filter(Boolean);
   const link     = links[0] || '';
   const notes    = document.getElementById('rep-notes').value.trim();
@@ -13007,7 +13158,7 @@ function submitResaleProductEdit(e) {
     if (_oldBuyPrice !== buyPrice) {
       priceHistory.push({ buyPrice, source: 'manual', at: Date.now() }); // Faza 0.1 / pkt. 12
     }
-    resaleProducts[idx] = { ...resaleProducts[idx], name, buyPrice, sellPrice, weight, quantity, link, links, notes, imageUrl, season, priceHistory };
+    resaleProducts[idx] = { ...resaleProducts[idx], name, buyPrice, sellPrice, weight, quantity, minStockAlert, link, links, notes, imageUrl, season, priceHistory };
   }
   save(SK.resaleProducts, resaleProducts);
   if (_priceChanged) {
@@ -14024,14 +14175,14 @@ function openResaleSaleFromProduct(productId) {
 function updateRpShippingPreview() {
   const w = parseFloat(document.getElementById('rp-weight')?.value) || 0;
   const el = document.getElementById('rp-ship-preview');
-  if (el) el.textContent = w > 0 ? fmt(w * RESALE_SHIP_PER_KG) : '—';
+  if (el) el.textContent = w > 0 ? fmt(w * resaleSettings.shipPerKg) : '—';
   updateRpRoiPreview();
 }
 
 function updateRepShippingPreview() {
   const w = parseFloat(document.getElementById('rep-weight')?.value) || 0;
   const el = document.getElementById('rep-ship-preview');
-  if (el) el.textContent = w > 0 ? fmt(w * RESALE_SHIP_PER_KG) : '—';
+  if (el) el.textContent = w > 0 ? fmt(w * resaleSettings.shipPerKg) : '—';
   updateRepRoiPreview();
 }
 
@@ -14039,7 +14190,7 @@ function updateRpRoiPreview() {
   const buy  = parseFloat(document.getElementById('rp-buyPrice')?.value) || 0;
   const sell = parseFloat(document.getElementById('rp-sellPrice')?.value) || 0;
   const w    = parseFloat(document.getElementById('rp-weight')?.value) || 0;
-  const ship = w * RESALE_SHIP_PER_KG;
+  const ship = w * resaleSettings.shipPerKg;
   const cost = buy + ship;
   const profit = sell - cost;
   const roi  = cost > 0 && sell > 0 ? (profit / cost) * 100 : null;
@@ -14068,7 +14219,7 @@ function updateRepRoiPreview() {
   const buy  = parseFloat(document.getElementById('rep-buyPrice')?.value) || 0;
   const sell = parseFloat(document.getElementById('rep-sellPrice')?.value) || 0;
   const w    = parseFloat(document.getElementById('rep-weight')?.value) || 0;
-  const ship = w * RESALE_SHIP_PER_KG;
+  const ship = w * resaleSettings.shipPerKg;
   const cost = buy + ship;
   const profit = sell - cost;
   const roi  = cost > 0 && sell > 0 ? (profit / cost) * 100 : null;
@@ -14170,7 +14321,7 @@ function getResaleSaleCost(productId, shipmentId=null) {
     }
   }
   const buyCost = Number(prod.buyPrice)||0;
-  const shipCost = (Number(prod.weight)||0) * RESALE_SHIP_PER_KG;
+  const shipCost = (Number(prod.weight)||0) * resaleSettings.shipPerKg;
   const totalCost = buyCost + shipCost;
   return { buyCost, shipCost, totalCost, suggestedPrice:Math.ceil((totalCost * 1.30) * 100) / 100, shipment:null };
 }
@@ -14216,7 +14367,7 @@ function updateResaleMarginCalc() {
   const feeAmt = fee.type === 'pct_plus_fixed'
     ? sellPrice * fee.pct + fee.fixed
     : sellPrice * fee.pct;
-  const shipCost = exactShipCost !== null ? exactShipCost : (weight > 0 ? weight * RESALE_SHIP_PER_KG : 0);
+  const shipCost = exactShipCost !== null ? exactShipCost : (weight > 0 ? weight * resaleSettings.shipPerKg : 0);
   const netProfit = sellPrice - feeAmt - buyPrice - shipCost;
   const totalCost = buyPrice + shipCost + feeAmt;
   const margin = sellPrice > 0 ? (netProfit / sellPrice) * 100 : 0;
@@ -14363,7 +14514,7 @@ function _calcShipmentDraftEstimate(items) {
     if (!p) return null;
     const buyOne  = p.buyPrice || 0;
     const wOne    = p.weight   || 0;
-    const shipOne = wOne * RESALE_SHIP_PER_KG;
+    const shipOne = wOne * resaleSettings.shipPerKg;
     const buyAll  = buyOne  * item.qty;
     const wAll    = wOne    * item.qty;
     const shipAll = shipOne * item.qty;
@@ -14605,7 +14756,7 @@ function _renderShipmentCostHTML(calc) {
         ${calc.hasActual ? compareValue(calc.totalBuy, calc.estimatedBuy) : `<span class="font-bold text-amber-600 dark:text-amber-400">${fmt(calc.totalBuy)}</span>`}
       </div>
       <div class="flex items-center justify-between px-4 py-2.5 gap-3">
-        <div class="flex items-center gap-2 text-sm text-slate-500"><div class="w-6 h-6 rounded-lg bg-blue-50 dark:bg-blue-500/10 flex items-center justify-center"><i data-lucide="truck" class="w-3.5 h-3.5 text-blue-500"></i></div>${calc.hasActual ? 'Koszt wysyłki' : `Koszt wysyłki (~${RESALE_SHIP_PER_KG} zł/kg)`}</div>
+        <div class="flex items-center gap-2 text-sm text-slate-500"><div class="w-6 h-6 rounded-lg bg-blue-50 dark:bg-blue-500/10 flex items-center justify-center"><i data-lucide="truck" class="w-3.5 h-3.5 text-blue-500"></i></div>${calc.hasActual ? 'Koszt wysyłki' : `Koszt wysyłki (~${resaleSettings.shipPerKg} zł/kg)`}</div>
         ${calc.hasActual ? compareValue(calc.totalShip, calc.estimatedShip) : `<span class="font-bold text-blue-600 dark:text-blue-400">${fmt(calc.totalShip)}</span>`}
       </div>
       <div class="flex items-center justify-between px-4 py-2.5 gap-3">
@@ -15649,11 +15800,21 @@ function confirmShipmentDelivered(id) {
   // przy ponownym otwarciu lub zapisaniu danych dostawy.
   if (!sh.stockAddedAt) {
     const missing = [];
+    // pkt.12 — rzeczywisty koszt per pozycja z paczki (po wpisaniu danych dostawy),
+    // do porównania z buyPrice produktu i ewentualnego dopisania do priceHistory.
+    const _calc = _calcShipmentDraft(sh.items || [], sh);
     (sh.items || []).forEach(item => {
       const qty = Math.max(0, parseInt(item.qty, 10) || 0);
       if (!qty) return;
       const product = resaleProducts.find(p => p.id === item.productId);
-      if (product) product.quantity = Math.max(0, parseInt(product.quantity, 10) || 0) + qty;
+      if (product) {
+        product.quantity = Math.max(0, parseInt(product.quantity, 10) || 0) + qty;
+        const row = _calc.rows.find(r => r.p.id === item.productId);
+        if (row && row.buyOne > 0 && Math.round(row.buyOne * 100) !== Math.round((product.buyPrice||0) * 100)) {
+          if (!Array.isArray(product.priceHistory)) product.priceHistory = [];
+          product.priceHistory.push({ buyPrice: +row.buyOne.toFixed(2), source: 'shipment', shipmentId: sh.id, at: Date.now() });
+        }
+      }
       else missing.push(item.productId);
     });
     sh.stockAddedAt = Date.now();
@@ -16087,7 +16248,7 @@ function renderResaleStats(s) {
   // Per-product profit data (using soldPrice if available)
   const productStats = resaleProducts.map(p => {
     const sold = shippedSales.filter(rs => rs.productId === p.id);
-    const ship = p.weight ? p.weight * RESALE_SHIP_PER_KG : 0;
+    const ship = p.weight ? p.weight * resaleSettings.shipPerKg : 0;
     const cost = (p.buyPrice||0) + ship;
     const revenues = sold.map(rs => rs.soldPrice ?? rs.price);
     const avgRevenue = revenues.length ? revenues.reduce((a,v)=>a+v,0)/revenues.length : null;
@@ -16137,7 +16298,7 @@ function renderResaleStats(s) {
       const shipPart = ac.totalShip * ((item?.qty||1) * (p?.weight||0)) / Math.max(0.0001, _calcShipmentDraftEstimate(shipment.items||[]).totalWeight);
       return a + buy + shipPart;
     }
-    const ship = p?.weight ? p.weight*RESALE_SHIP_PER_KG : 0;
+    const ship = p?.weight ? p.weight*resaleSettings.shipPerKg : 0;
     return a + (p?.buyPrice||0) + ship;
   },0);
   const totalSoldProfit = totalSoldRevenue - totalSoldCost;
