@@ -13254,9 +13254,17 @@ function confirmMarkSold(saleId) {
   rs.status    = 'to_ship';
   rs.soldAt    = Date.now();
   rs.soldPrice = soldPrice;
+  // WAŻNE: zapisujemy resaleSales PRZED ensureResaleSaleInventoryDeducted().
+  // Ta druga funkcja zapisuje osobny węzeł (resaleProducts), co wywołuje globalny
+  // listener .on('value') na całej referencji użytkownika — a on odczytuje na nowo
+  // WSZYSTKIE tablice (w tym resaleSales) z bazy. Gdyby zapis resaleSales nie
+  // zdążył jeszcze trafić do lokalnego cache Firebase, listener nadpisałby właśnie
+  // zmieniony obiekt `rs` starą wersją (status sprzed zmiany), więc zmiana statusu
+  // ginęłaby mimo poprawnego zapisu produktów/salda. Zapisując resaleSales najpierw,
+  // gwarantujemy że listener zawsze zobaczy już zaktualizowany status.
+  save(SK.resaleSales, resaleSales);
   // Sprzedaż jest potwierdzona — od tej chwili sztuka nie jest już dostępna na stanie.
   ensureResaleSaleInventoryDeducted(rs);
-  save(SK.resaleSales, resaleSales);
 
   // Optionally add to history
   if (addHistory) {
@@ -13304,10 +13312,20 @@ function finishResaleSale(saleId) {
   if (!rs) return;
   rs.status  = 'done';
   rs.doneAt  = Date.now();
+  // WAŻNE: zapisujemy resaleSales PRZED ensureResaleSaleInventoryDeducted() i przed
+  // dopisaniem transakcji do salda. ensureResaleSaleInventoryDeducted() zapisuje
+  // osobny węzeł (resaleProducts), co wywołuje globalny listener .on('value') na
+  // całej referencji użytkownika — a on odczytuje na nowo WSZYSTKIE tablice
+  // (w tym resaleSales) z bazy. To był dokładnie ten bug: kwota trafiała do salda
+  // (bo transactions zapisywało się poprawnie), ale status sprzedaży wracał do
+  // 'shipped', bo listener nadpisywał świeżo zmieniony obiekt `rs` starą wersją
+  // zanim zdążył się zapisać zaktualizowany resaleSales. Zapisując resaleSales
+  // najpierw, gwarantujemy że status 'done' jest już bezpiecznie zapisany zanim
+  // jakikolwiek inny zapis (produkty, transakcje) wywoła ponowne przeładowanie.
+  save(SK.resaleSales, resaleSales);
   // Zabezpieczenie dla starszych rekordów, które zostały sprzedane przed dodaniem
   // flagi _inventoryDeducted. Dla nowych rekordów funkcja niczego drugi raz nie odejmie.
   ensureResaleSaleInventoryDeducted(rs);
-  save(SK.resaleSales, resaleSales);
 
   // Add to Saldo Resale
   const soldPrice = rs.soldPrice ?? rs.price;
