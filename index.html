@@ -4461,6 +4461,11 @@ function startOwnerListener(uidToWatch) {
 
     transactions = load(SK.transactions, []);
     debtors      = load(SK.debtors, []);
+    // Jednorazowo odśwież także istniejące udostępnienia po wdrożeniu nowego
+    // modelu publicznych snapshotów (bez zmiany prywatnego węzła users/<uid>).
+    if (currentUid && Array.isArray(debtors)) {
+      syncPublicDebtShares(debtors).catch(err => console.error('Initial public debt share sync failed:', err));
+    }
     budgets      = load(SK.budgets, []);
     goals        = load(SK.goals, []);
     reminders    = load(SK.reminders, []);
