@@ -2319,11 +2319,11 @@
     <div class="space-y-4">
       <div class="flex items-center justify-between p-3 bg-slate-50 dark:bg-slate-800/50 rounded-xl border border-slate-100 dark:border-slate-800">
         <div>
-          <p class="text-xs font-semibold text-slate-700 dark:text-slate-200">Zezwól dłużnikowi na edycję</p>
-          <p class="text-[10px] text-slate-400">Dłużnik będzie mógł dodawać, edytować i usuwać pozycje</p>
+          <p class="text-xs font-semibold text-slate-700 dark:text-slate-200">Edycja przez dłużnika</p>
+          <p class="text-[10px] text-slate-400">Tymczasowo wyłączona — udostępniony link działa bezpiecznie w trybie tylko do odczytu.</p>
         </div>
-        <label class="relative inline-flex items-center cursor-pointer">
-          <input type="checkbox" id="share-allow-edit-toggle" class="sr-only peer" onchange="toggleShareAllowEdit()">
+        <label class="relative inline-flex items-center cursor-not-allowed opacity-50">
+          <input type="checkbox" id="share-allow-edit-toggle" class="sr-only peer" disabled>
           <div class="w-9 h-5 bg-slate-200 peer-focus:outline-none rounded-full peer dark:bg-slate-700 peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all dark:border-slate-600 peer-checked:bg-indigo-500"></div>
         </label>
       </div>
@@ -3937,6 +3937,14 @@ function save(key, data) {
   try {
     const clean = _stripUndefinedDeep(data);
     const result = currentUserRef.child(key).set(clean);
+    if (key === SK.debtors && currentUid) {
+      // Publikuj wyłącznie jawnie udostępnione, ograniczone dane dłużników.
+      // Publiczny widok nigdy nie otrzymuje dostępu do users/<uid>.
+      syncPublicDebtShares(clean).catch(err => {
+        console.error('Public debt share sync failed:', err);
+        toast('Nie udało się odświeżyć udostępnionego profilu.', 'error');
+      });
+    }
     if (result && typeof result.catch === 'function') {
       result.catch(err => {
         console.error('Firebase save error for key "' + key + '":', err);
@@ -3947,6 +3955,34 @@ function save(key, data) {
     console.error('Firebase save threw synchronously for key "' + key + '":', err);
     toast('Błąd zapisu (' + key + '): ' + (err && err.message ? err.message : err), 'error');
   }
+}
+
+/* Synchronizuje minimalny, publiczny wycinek danych udostępnionych dłużników.
+   Token jest kluczem rekordu; dane całego użytkownika pozostają prywatne. */
+async function syncPublicDebtShares(debtorList) {
+  if (!currentUid || !Array.isArray(debtorList)) return;
+  const writes = debtorList
+    .filter(d => d && d.id && d.shareSettings && d.shareSettings.accessCode)
+    .map(d => {
+      const token = String(d.shareSettings.accessCode);
+      const publicDebtor = {
+        id: d.id,
+        name: d.name || 'Dłużnik',
+        debts: Array.isArray(d.debts) ? d.debts : [],
+        activityLog: Array.isArray(d.activityLog) ? d.activityLog : [],
+        // Publiczne linki pozostają tylko do odczytu. Zapis anonimowy wymagałby
+        // zaufanego backendu, a nie reguły pozwalającej nadpisywać rekord.
+        shareSettings: { allowEdit: false }
+      };
+      return db.ref('publicDebtShares/' + token).set({
+        ownerUid: currentUid,
+        debtorId: d.id,
+        active: true,
+        debtor: _stripUndefinedDeep(publicDebtor),
+        updatedAt: Date.now()
+      });
+    });
+  await Promise.all(writes);
 }
 
 let transactions = [];
@@ -4519,21 +4555,22 @@ function stopOwnerListener() {
 }
 
 if (isGuestMode) {
-  // Widok gościa: nasłuchujemy WYŁĄCZNIE na węźle dłużników właściciela
-  // wskazanego w linku (?owner=<uid>), nigdy na całej jego bazie — gość nie
-  // pobiera transakcji, budżetów, celów itd.
-  if (guestOwnerUid) {
-    currentUserRef = db.ref('users/' + guestOwnerUid); // pozwala też na zapis przez save() (guestAddDebt itp.)
-    currentUserRef.child(SK.debtors).on('value', snapshot => {
-      debtors = snapshot.val() || [];
-      guestDebtorRef = debtors.find(x => x.id === guestDebtorId) || null;
+  // Gość odczytuje wyłącznie pojedynczy, publiczny rekord wskazany losowym tokenem.
+  // Nigdy nie odpytuje users/<uid> i nie otrzymuje dostępu do prywatnej bazy.
+  if (guestAccessCode && guestOwnerUid && guestDebtorId) {
+    db.ref('publicDebtShares/' + guestAccessCode).on('value', snapshot => {
+      const share = snapshot.val();
+      const validShare = share && share.active === true &&
+        share.ownerUid === guestOwnerUid && share.debtorId === guestDebtorId &&
+        share.debtor && share.debtor.id === guestDebtorId;
+      guestDebtorRef = validShare ? share.debtor : null;
       renderGuestView();
     }, err => {
+      console.error('Public debt share read failed:', err);
       document.getElementById('guest-content').classList.add('hidden');
       document.getElementById('guest-error').classList.remove('hidden');
     });
   } else {
-    // Link bez parametru ?owner= — stary format albo uszkodzony link.
     document.getElementById('guest-content').classList.add('hidden');
     document.getElementById('guest-error').classList.remove('hidden');
   }
@@ -7616,16 +7653,12 @@ function renderActivityLogSection(d) {
     </div>`;
 }
 
-/* ── Wykrywanie trybu gościa (widok publiczny dłużnika) ──
-   UWAGA (bezpieczeństwo): ta aplikacja nie posiada backendu/reguł Firebase
-   ograniczających odczyt do konkretnego dłużnika — patrz notatka na końcu
-   implementacji. Widok gościa nasłuchuje wyłącznie na węźle `finapp_debtors`
-   (a nie na całej bazie), dzięki czemu gość nigdy nie pobiera danych kont,
-   transakcji, budżetów, celów itd. — tylko listę dłużników, z której lokalnie
-   wybierany jest jeden rekord po `id` + `accessCode`.
-   (Zmienne isGuestMode / guestDebtorId / guestAccessCode / guestDebtorRef są
-   zadeklarowane wcześniej w pliku, tuż przy inicjalizacji Firebase, aby były
-   dostępne przed uruchomieniem głównego listenera `db.ref(...).on('value', …)`.) */
+/* ── Widok publiczny dłużnika ──
+   Goście odczytują tylko publicDebtShares/<losowy-token>, nigdy users/<uid>.
+   Dane udostępniane są publikowane przez zalogowanego właściciela jako
+   ograniczona projekcja rekordu dłużnika. Edycja gościa jest wyłączona do czasu
+   wdrożenia zaufanego backendu walidującego każdą operację.
+   Zmienne trybu gościa są zadeklarowane przy inicjalizacji Firebase. */
 
 function getGuestNick() {
   return sessionStorage.getItem('finapp_guest_nick_' + guestDebtorId) || '';
