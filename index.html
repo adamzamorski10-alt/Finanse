@@ -2328,6 +2328,9 @@
         </label>
       </div>
 
+      <button onclick="revokeDebtorShare()" class="w-full px-4 py-2.5 rounded-xl border border-rose-200 dark:border-rose-900 text-rose-600 dark:text-rose-400 text-xs font-semibold hover:bg-rose-50 dark:hover:bg-rose-500/10 transition">
+        Wyłącz udostępnianie i unieważnij link
+      </button>
       <div class="space-y-1">
         <label class="text-xs font-medium text-slate-500 block">Link do udostępnienia</label>
         <div class="flex gap-2">
@@ -3957,32 +3960,63 @@ function save(key, data) {
   }
 }
 
-/* Synchronizuje minimalny, publiczny wycinek danych udostępnionych dłużników.
-   Token jest kluczem rekordu; dane całego użytkownika pozostają prywatne. */
-async function syncPublicDebtShares(debtorList) {
-  if (!currentUid || !Array.isArray(debtorList)) return;
-  const writes = debtorList
-    .filter(d => d && d.id && d.shareSettings && d.shareSettings.accessCode)
-    .map(d => {
+/* Synchronizuje ograniczone publiczne snapshoty i usuwa nieaktualne tokeny.
+   Indeks tokenów jest prywatny (users/<uid>), dzięki czemu usunięcie dłużnika
+   lub cofnięcie udostępnienia unieważnia poprzedni link. */
+let _publicDebtShareSyncQueue = Promise.resolve();
+function syncPublicDebtShares(debtorList) {
+  if (!currentUid || !Array.isArray(debtorList)) return Promise.resolve();
+  const uidForSync = currentUid;
+  const run = async () => {
+    if (currentUid !== uidForSync) return;
+    const activeShares = new Map();
+    for (const d of debtorList) {
+      if (!d || !d.id || !d.shareSettings || !d.shareSettings.accessCode) continue;
       const token = String(d.shareSettings.accessCode);
+      if (!/^[A-Za-z0-9_-]{16,128}$/.test(token)) {
+        throw new Error('Nieprawidłowy token udostępniania profilu dłużnika.');
+      }
+      if (activeShares.has(token)) throw new Error('Wykryto powielony token udostępniania.');
+      activeShares.set(token, d);
+    }
+
+    const indexRef = db.ref('users/' + uidForSync + '/publicDebtShareTokens');
+    const indexSnapshot = await indexRef.once('value');
+    const previousIndex = indexSnapshot.val() || {};
+    const nextIndex = {};
+    const operations = [];
+
+    for (const [token, d] of activeShares) {
+      nextIndex[token] = true;
       const publicDebtor = {
         id: d.id,
         name: d.name || 'Dłużnik',
         debts: Array.isArray(d.debts) ? d.debts : [],
         activityLog: Array.isArray(d.activityLog) ? d.activityLog : [],
-        // Publiczne linki pozostają tylko do odczytu. Zapis anonimowy wymagałby
-        // zaufanego backendu, a nie reguły pozwalającej nadpisywać rekord.
         shareSettings: { allowEdit: false, accessCode: token }
       };
-      return db.ref('publicDebtShares/' + token).set({
-        ownerUid: currentUid,
+      operations.push(db.ref('publicDebtShares/' + token).set({
+        ownerUid: uidForSync,
         debtorId: d.id,
         active: true,
         debtor: _stripUndefinedDeep(publicDebtor),
         updatedAt: Date.now()
-      });
-    });
-  await Promise.all(writes);
+      }));
+    }
+
+    for (const token of Object.keys(previousIndex)) {
+      if (!nextIndex[token] && /^[A-Za-z0-9_-]{16,128}$/.test(token)) {
+        operations.push(db.ref('publicDebtShares/' + token).remove());
+      }
+    }
+
+    await Promise.all(operations);
+    if (currentUid !== uidForSync) return;
+    await indexRef.set(nextIndex);
+  };
+
+  _publicDebtShareSyncQueue = _publicDebtShareSyncQueue.catch(() => {}).then(run);
+  return _publicDebtShareSyncQueue;
 }
 
 let transactions = [];
@@ -7613,6 +7647,33 @@ function openDebtorShareModal(debtorId) {
 function closeDebtorShareModal() {
   document.getElementById('debtor-share-modal').classList.add('hidden');
   shareModalDebtorId = null;
+}
+
+async function revokeDebtorShare() {
+  const d = debtors.find(x => x.id === shareModalDebtorId);
+  const token = d && d.shareSettings && d.shareSettings.accessCode;
+  if (!d || !token || !currentUid || !currentUserRef) return;
+  if (!confirm('Wyłączyć udostępnianie tego profilu? Dotychczasowy link natychmiast przestanie działać.')) return;
+
+  try {
+    const nextDebtors = debtors.map(item => {
+      if (item.id !== d.id) return item;
+      const copy = { ...item };
+      delete copy.shareSettings;
+      return copy;
+    });
+    // Najpierw zapis prywatny, potem jawne unieważnienie publicznego tokenu.
+    await currentUserRef.child(SK.debtors).set(_stripUndefinedDeep(nextDebtors));
+    await db.ref('publicDebtShares/' + String(token)).remove();
+    debtors = nextDebtors;
+    await syncPublicDebtShares(debtors);
+    closeDebtorShareModal();
+    renderAll();
+    toast('Udostępnianie wyłączone — link unieważniony ✓');
+  } catch (err) {
+    console.error('Public debt share revocation failed:', err);
+    toast('Nie udało się w pełni unieważnić linku. Spróbuj ponownie.', 'error');
+  }
 }
 
 function toggleShareAllowEdit() {
