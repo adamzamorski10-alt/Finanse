@@ -3972,7 +3972,7 @@ async function syncPublicDebtShares(debtorList) {
         activityLog: Array.isArray(d.activityLog) ? d.activityLog : [],
         // Publiczne linki pozostają tylko do odczytu. Zapis anonimowy wymagałby
         // zaufanego backendu, a nie reguły pozwalającej nadpisywać rekord.
-        shareSettings: { allowEdit: false }
+        shareSettings: { allowEdit: false, accessCode: token }
       };
       return db.ref('publicDebtShares/' + token).set({
         ownerUid: currentUid,
