@@ -1,0 +1,16 @@
+{
+  "rules": {
+    "users": {
+      "$uid": {
+        ".read": "auth != null && auth.uid === $uid",
+        ".write": "auth != null && auth.uid === $uid"
+      }
+    },
+    "publicDebtShares": {
+      "$token": {
+        ".read": true,
+        ".write": "auth != null && ((data.exists() && data.child('ownerUid').val() === auth.uid) || (!data.exists() && newData.child('ownerUid').val() === auth.uid))"
+      }
+    }
+  }
+}
